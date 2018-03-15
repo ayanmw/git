@@ -44,7 +44,6 @@ use Git qw(
 	command_close_pipe
 	command_bidi_pipe
 	command_close_bidi_pipe
-	get_record
 );
 
 BEGIN {
@@ -340,7 +339,7 @@ if ($cmd && $cmd =~ /(?:clone|init|multi-init)$/) {
 			die "failed to open $ENV{GIT_DIR}: $!\n";
 		$ENV{GIT_DIR} = $1 if <$fh> =~ /^gitdir: (.+)$/;
 	}
-} elsif ($cmd) {
+} else {
 	my ($git_dir, $cdup);
 	git_cmd_try {
 		$git_dir = command_oneline([qw/rev-parse --git-dir/]);
@@ -357,7 +356,7 @@ if ($cmd && $cmd =~ /(?:clone|init|multi-init)$/) {
 
 my %opts = %{$cmd{$cmd}->[2]} if (defined $cmd);
 
-read_git_config(\%opts) if $ENV{GIT_DIR};
+read_git_config(\%opts);
 if ($cmd && ($cmd eq 'log' || $cmd eq 'blame')) {
 	Getopt::Long::Configure('pass_through');
 }
@@ -508,10 +507,7 @@ sub init_subdir {
 
 sub cmd_clone {
 	my ($url, $path) = @_;
-	if (!$url) {
-		die "SVN repository location required ",
-		    "as a command-line argument\n";
-	} elsif (!defined $path &&
+	if (!defined $path &&
 	    (defined $_trunk || @_branches || @_tags ||
 	     defined $_stdlayout) &&
 	    $url !~ m#^[a-z\+]+://#) {
@@ -931,7 +927,6 @@ sub cmd_dcommit {
 		# information from different SVN repos, and paths
 		# which are not underneath this repository root.
 		my $rooturl = $gs->repos_root;
-	        Git::SVN::remove_username($rooturl);
 		foreach my $d (@$linear_refs) {
 			my %parentshash;
 			read_commit_parents(\%parentshash, $d);
@@ -1176,10 +1171,10 @@ sub cmd_branch {
 	::_req_svn();
 	require SVN::Client;
 
-	my ($config, $baton, undef) = Git::SVN::Ra::prepare_config_once();
 	my $ctx = SVN::Client->new(
-		auth => $baton,
-		config => $config,
+		config => SVN::Core::config_get_config(
+			$Git::SVN::Ra::config_dir
+		),
 		log_msg => sub {
 			${ $_[0] } = defined $_message
 				? $_message
@@ -1199,11 +1194,6 @@ sub cmd_branch {
 	print "Copying ${src} at r${rev} to ${dst}...\n";
 	$ctx->copy($src, $rev, $dst)
 		unless $_dry_run;
-
-	# Release resources held by ctx before creating another SVN::Ra
-	# so destruction is orderly.  This seems necessary with SVN 1.9.5
-	# to avoid segfaults.
-	$ctx = undef;
 
 	$gs->fetch_all;
 }
@@ -1706,7 +1696,7 @@ sub cmd_gc {
 		     "files will not be compressed.\n";
 	}
 	File::Find::find({ wanted => \&gc_directory, no_chdir => 1},
-			 Git::SVN::svn_dir());
+			 "$ENV{GIT_DIR}/svn");
 }
 
 ########################### utility functions #########################
@@ -1740,7 +1730,7 @@ sub post_fetch_checkout {
 	return unless verify_ref('HEAD^0');
 
 	return if $ENV{GIT_DIR} !~ m#^(?:.*/)?\.git$#;
-	my $index = command_oneline(qw(rev-parse --git-path index));
+	my $index = $ENV{GIT_INDEX_FILE} || "$ENV{GIT_DIR}/index";
 	return if -f $index;
 
 	return if command_oneline(qw/rev-parse --is-inside-work-tree/) eq 'false';
@@ -1755,12 +1745,11 @@ sub post_fetch_checkout {
 
 sub complete_svn_url {
 	my ($url, $path) = @_;
+	$path = canonicalize_path($path);
 
-	if ($path =~ m#^[a-z\+]+://#i) { # path is a URL
-		$path = canonicalize_url($path);
-	} else {
-		$path = canonicalize_path($path);
-		if (!defined $url || $url !~ m#^[a-z\+]+://#i) {
+	# If the path is not a URL...
+	if ($path !~ m#^[a-z\+]+://#) {
+		if (!defined $url || $url !~ m#^[a-z\+]+://#) {
 			fatal("E: '$path' is not a complete URL ",
 			      "and a separate URL is not specified");
 		}
@@ -1775,12 +1764,11 @@ sub complete_url_ls_init {
 		print STDERR "W: $switch not specified\n";
 		return;
 	}
-	if ($repo_path =~ m#^[a-z\+]+://#i) {
-		$repo_path = canonicalize_url($repo_path);
+	$repo_path = canonicalize_path($repo_path);
+	if ($repo_path =~ m#^[a-z\+]+://#) {
 		$ra = Git::SVN::Ra->new($repo_path);
 		$repo_path = '';
 	} else {
-		$repo_path = canonicalize_path($repo_path);
 		$repo_path =~ s#^/+##;
 		unless ($ra) {
 			fatal("E: '$repo_path' is not a complete URL ",
@@ -1842,9 +1830,8 @@ sub get_tree_from_treeish {
 sub get_commit_entry {
 	my ($treeish) = shift;
 	my %log_entry = ( log => '', tree => get_tree_from_treeish($treeish) );
-	my @git_path = qw(rev-parse --git-path);
-	my $commit_editmsg = command_oneline(@git_path, 'COMMIT_EDITMSG');
-	my $commit_msg = command_oneline(@git_path, 'COMMIT_MSG');
+	my $commit_editmsg = "$ENV{GIT_DIR}/COMMIT_EDITMSG";
+	my $commit_msg = "$ENV{GIT_DIR}/COMMIT_MSG";
 	open my $log_fh, '>', $commit_editmsg or croak $!;
 
 	my $type = command_oneline(qw/cat-file -t/, $treeish);
@@ -1871,7 +1858,6 @@ sub get_commit_entry {
 			}
 		}
 		$msgbuf =~ s/\s+$//s;
-		$msgbuf =~ s/\r\n/\n/sg; # SVN 1.6+ disallows CRLF
 		if ($Git::SVN::_add_author_from && defined($author)
 		    && !$saw_from) {
 			$msgbuf .= "\n\nFrom: $author";
@@ -1889,9 +1875,10 @@ sub get_commit_entry {
 	{
 		require Encode;
 		# SVN requires messages to be UTF-8 when entering the repo
+		local $/;
 		open $log_fh, '<', $commit_msg or croak $!;
 		binmode $log_fh;
-		chomp($log_entry{log} = get_record($log_fh, undef));
+		chomp($log_entry{log} = <$log_fh>);
 
 		my $enc = Git::config('i18n.commitencoding') || 'UTF-8';
 		my $msg = $log_entry{log};
@@ -1937,7 +1924,7 @@ sub load_authors {
 	my $log = $cmd eq 'log';
 	while (<$authors>) {
 		chomp;
-		next unless /^(.+?|\(no author\))\s*=\s*(.+?)\s*<(.*)>\s*$/;
+		next unless /^(.+?|\(no author\))\s*=\s*(.+?)\s*<(.+)>\s*$/;
 		my ($user, $name, $email) = ($1, $2, $3);
 		if ($log) {
 			$Git::SVN::Log::rusers{"$name <$email>"} = $user;

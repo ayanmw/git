@@ -68,7 +68,7 @@ struct strbuf {
 };
 
 extern char strbuf_slopbuf[];
-#define STRBUF_INIT  { .alloc = 0, .len = 0, .buf = strbuf_slopbuf }
+#define STRBUF_INIT  { 0, 0, strbuf_slopbuf }
 
 /**
  * Life Cycle Functions
@@ -82,12 +82,8 @@ extern char strbuf_slopbuf[];
 extern void strbuf_init(struct strbuf *, size_t);
 
 /**
- * Release a string buffer and the memory it used. After this call, the
- * strbuf points to an empty string that does not need to be free()ed, as
- * if it had been set to `STRBUF_INIT` and never modified.
- *
- * To clear a strbuf in preparation for further use without the overhead
- * of free()ing and malloc()ing again, use strbuf_reset() instead.
+ * Release a string buffer and the memory it used. You should not use the
+ * string buffer after using this function, unless you initialize it again.
  */
 extern void strbuf_release(struct strbuf *);
 
@@ -95,9 +91,6 @@ extern void strbuf_release(struct strbuf *);
  * Detach the string from the strbuf and returns it; you now own the
  * storage the string occupies and it is your responsibility from then on
  * to release it with `free(3)` when you are done with it.
- *
- * The strbuf that previously held the string is reset to `STRBUF_INIT` so
- * it can be reused after calling this function.
  */
 extern char *strbuf_detach(struct strbuf *, size_t *);
 
@@ -116,7 +109,9 @@ extern void strbuf_attach(struct strbuf *, void *, size_t, size_t);
  */
 static inline void strbuf_swap(struct strbuf *a, struct strbuf *b)
 {
-	SWAP(*a, *b);
+	struct strbuf tmp = *a;
+	*a = *b;
+	*b = tmp;
 }
 
 
@@ -154,10 +149,7 @@ static inline void strbuf_setlen(struct strbuf *sb, size_t len)
 	if (len > (sb->alloc ? sb->alloc - 1 : 0))
 		die("BUG: strbuf_setlen() beyond buffer");
 	sb->len = len;
-	if (sb->buf != strbuf_slopbuf)
-		sb->buf[len] = '\0';
-	else
-		assert(!strbuf_slopbuf[0]);
+	sb->buf[len] = '\0';
 }
 
 /**
@@ -178,9 +170,6 @@ static inline void strbuf_setlen(struct strbuf *sb, size_t len)
 extern void strbuf_trim(struct strbuf *);
 extern void strbuf_rtrim(struct strbuf *);
 extern void strbuf_ltrim(struct strbuf *);
-
-/* Strip trailing directory separators */
-extern void strbuf_trim_trailing_dir_sep(struct strbuf *);
 
 /**
  * Replace the contents of the strbuf with a reencoded form.  Returns -1
@@ -216,8 +205,7 @@ extern int strbuf_cmp(const struct strbuf *, const struct strbuf *);
  */
 static inline void strbuf_addch(struct strbuf *sb, int c)
 {
-	if (!strbuf_avail(sb))
-		strbuf_grow(sb, 1);
+	strbuf_grow(sb, 1);
 	sb->buf[sb->len++] = c;
 	sb->buf[sb->len] = '\0';
 }
@@ -274,7 +262,17 @@ static inline void strbuf_addstr(struct strbuf *sb, const char *s)
 /**
  * Copy the contents of another buffer at the end of the current one.
  */
-extern void strbuf_addbuf(struct strbuf *sb, const struct strbuf *sb2);
+static inline void strbuf_addbuf(struct strbuf *sb, const struct strbuf *sb2)
+{
+	strbuf_grow(sb, sb2->len);
+	strbuf_add(sb, sb2->buf, sb2->len);
+}
+
+/**
+ * Copy part of the buffer from a given position till a given length to the
+ * end of the buffer.
+ */
+extern void strbuf_adddup(struct strbuf *sb, size_t pos, size_t len);
 
 /**
  * This function can be used to expand a format string containing
@@ -346,24 +344,12 @@ __attribute__((format (printf,2,0)))
 extern void strbuf_vaddf(struct strbuf *sb, const char *fmt, va_list ap);
 
 /**
- * Add the time specified by `tm`, as formatted by `strftime`.
- * `tz_offset` is in decimal hhmm format, e.g. -600 means six hours west
- * of Greenwich, and it's used to expand %z internally.  However, tokens
- * with modifiers (e.g. %Ez) are passed to `strftime`.
- * `suppress_tz_name`, when set, expands %Z internally to the empty
- * string rather than passing it to `strftime`.
- */
-extern void strbuf_addftime(struct strbuf *sb, const char *fmt,
-			    const struct tm *tm, int tz_offset,
-			    int suppress_tz_name);
-
-/**
  * Read a given size of data from a FILE* pointer to the buffer.
  *
  * NOTE: The buffer is rewound if the read fails. If -1 is returned,
  * `errno` must be consulted, like you would do for `read(3)`.
- * `strbuf_read()`, `strbuf_read_file()` and `strbuf_getline_*()`
- * family of functions have the same behaviour as well.
+ * `strbuf_read()`, `strbuf_read_file()` and `strbuf_getline()` has the
+ * same behaviour as well.
  */
 extern size_t strbuf_fread(struct strbuf *, size_t, FILE *);
 
@@ -375,20 +361,10 @@ extern size_t strbuf_fread(struct strbuf *, size_t, FILE *);
 extern ssize_t strbuf_read(struct strbuf *, int fd, size_t hint);
 
 /**
- * Read the contents of a given file descriptor partially by using only one
- * attempt of xread. The third argument can be used to give a hint about the
- * file size, to avoid reallocs. Returns the number of new bytes appended to
- * the sb.
- */
-extern ssize_t strbuf_read_once(struct strbuf *, int fd, size_t hint);
-
-/**
  * Read the contents of a file, specified by its path. The third argument
  * can be used to give a hint about the file size, to avoid reallocs.
- * Return the number of bytes read or a negative value if some error
- * occurred while opening or reading the file.
  */
-extern ssize_t strbuf_read_file(struct strbuf *sb, const char *path, size_t hint);
+extern int strbuf_read_file(struct strbuf *sb, const char *path, size_t hint);
 
 /**
  * Read the target of a symbolic link, specified by its path.  The third
@@ -397,37 +373,14 @@ extern ssize_t strbuf_read_file(struct strbuf *sb, const char *path, size_t hint
 extern int strbuf_readlink(struct strbuf *sb, const char *path, size_t hint);
 
 /**
- * Write the whole content of the strbuf to the stream not stopping at
- * NUL bytes.
- */
-extern ssize_t strbuf_write(struct strbuf *sb, FILE *stream);
-
-/**
- * Read a line from a FILE *, overwriting the existing contents of
- * the strbuf.  The strbuf_getline*() family of functions share
- * this signature, but have different line termination conventions.
- *
+ * Read a line from a FILE *, overwriting the existing contents
+ * of the strbuf. The second argument specifies the line
+ * terminator character, typically `'\n'`.
  * Reading stops after the terminator or at EOF.  The terminator
  * is removed from the buffer before returning.  Returns 0 unless
  * there was nothing left before EOF, in which case it returns `EOF`.
  */
-typedef int (*strbuf_getline_fn)(struct strbuf *, FILE *);
-
-/* Uses LF as the line terminator */
-extern int strbuf_getline_lf(struct strbuf *sb, FILE *fp);
-
-/* Uses NUL as the line terminator */
-extern int strbuf_getline_nul(struct strbuf *sb, FILE *fp);
-
-/*
- * Similar to strbuf_getline_lf(), but additionally treats a CR that
- * comes immediately before the LF as part of the terminator.
- * This is the most friendly version to be used to read "text" files
- * that can come from platforms whose native text format is CRLF
- * terminated.
- */
-extern int strbuf_getline(struct strbuf *, FILE *);
-
+extern int strbuf_getline(struct strbuf *, FILE *, int);
 
 /**
  * Like `strbuf_getline`, but keeps the trailing terminator (if
@@ -456,32 +409,10 @@ extern int strbuf_getcwd(struct strbuf *sb);
 extern void strbuf_add_absolute_path(struct strbuf *sb, const char *path);
 
 /**
- * Canonize `path` (make it absolute, resolve symlinks, remove extra
- * slashes) and append it to `sb`.  Die with an informative error
- * message if there is a problem.
- *
- * The directory part of `path` (i.e., everything up to the last
- * dir_sep) must denote a valid, existing directory, but the last
- * component need not exist.
- *
- * Callers that don't mind links should use the more lightweight
- * strbuf_add_absolute_path() instead.
- */
-extern void strbuf_add_real_path(struct strbuf *sb, const char *path);
-
-
-/**
- * Normalize in-place the path contained in the strbuf. See
- * normalize_path_copy() for details. If an error occurs, the contents of "sb"
- * are left untouched, and -1 is returned.
- */
-extern int strbuf_normalize_path(struct strbuf *sb);
-
-/**
  * Strip whitespace from a buffer. The second parameter controls if
  * comments are considered contents to be removed or not.
  */
-extern void strbuf_stripspace(struct strbuf *buf, int skip_comments);
+extern void stripspace(struct strbuf *buf, int skip_comments);
 
 static inline int strbuf_strip_suffix(struct strbuf *sb, const char *suffix)
 {
@@ -538,14 +469,6 @@ static inline struct strbuf **strbuf_split(const struct strbuf *sb,
 extern void strbuf_list_free(struct strbuf **);
 
 /**
- * Add the abbreviation, as generated by find_unique_abbrev, of `sha1` to
- * the strbuf `sb`.
- */
-extern void strbuf_add_unique_abbrev(struct strbuf *sb,
-				     const unsigned char *sha1,
-				     int abbrev_len);
-
-/**
  * Launch the user preferred editor to edit a file and fill the buffer
  * with the file's contents upon the user completing their editing. The
  * third argument can be used to set the environment which the editor is
@@ -562,43 +485,13 @@ extern void strbuf_add_lines(struct strbuf *sb, const char *prefix, const char *
  */
 extern void strbuf_addstr_xml_quoted(struct strbuf *sb, const char *s);
 
-/**
- * "Complete" the contents of `sb` by ensuring that either it ends with the
- * character `term`, or it is empty.  This can be used, for example,
- * to ensure that text ends with a newline, but without creating an empty
- * blank line if there is no content in the first place.
- */
-static inline void strbuf_complete(struct strbuf *sb, char term)
-{
-	if (sb->len && sb->buf[sb->len - 1] != term)
-		strbuf_addch(sb, term);
-}
-
 static inline void strbuf_complete_line(struct strbuf *sb)
 {
-	strbuf_complete(sb, '\n');
+	if (sb->len && sb->buf[sb->len - 1] != '\n')
+		strbuf_addch(sb, '\n');
 }
 
-/*
- * Copy "name" to "sb", expanding any special @-marks as handled by
- * interpret_branch_name(). The result is a non-qualified branch name
- * (so "foo" or "origin/master" instead of "refs/heads/foo" or
- * "refs/remotes/origin/master").
- *
- * Note that the resulting name may not be a syntactically valid refname.
- *
- * If "allowed" is non-zero, restrict the set of allowed expansions. See
- * interpret_branch_name() for details.
- */
-extern void strbuf_branchname(struct strbuf *sb, const char *name,
-			      unsigned allowed);
-
-/*
- * Like strbuf_branchname() above, but confirm that the result is
- * syntactically valid to be used as a local branch name in refs/heads/.
- *
- * The return value is "0" if the result is valid, and "-1" otherwise.
- */
+extern int strbuf_branchname(struct strbuf *sb, const char *name);
 extern int strbuf_check_branch_ref(struct strbuf *sb, const char *name);
 
 extern void strbuf_addstr_urlencode(struct strbuf *, const char *,

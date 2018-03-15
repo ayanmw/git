@@ -5,6 +5,6 @@
 #define SIDEBAND_REMOTE_ERROR -1
 
 int recv_sideband(const char *me, int in_stream, int out);
-void send_sideband(int fd, int band, const char *data, ssize_t sz, int packet_max);
+ssize_t send_sideband(int fd, int band, const char *data, ssize_t sz, int packet_max);
 
 #endif

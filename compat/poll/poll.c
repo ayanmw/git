@@ -16,7 +16,8 @@
    GNU General Public License for more details.
 
    You should have received a copy of the GNU General Public License along
-   with this program; if not, see <http://www.gnu.org/licenses/>.  */
+   with this program; if not, write to the Free Software Foundation,
+   Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.  */
 
 /* Tell gcc not to warn about the (nfd < 0) tests, below.  */
 #if (__GNUC__ == 4 && 3 <= __GNUC_MINOR__) || 4 < __GNUC__
@@ -75,7 +76,7 @@
 
 #ifdef WIN32_NATIVE
 
-#define IsConsoleHandle(h) (((long) (intptr_t) (h) & 3) == 3)
+#define IsConsoleHandle(h) (((long) (h) & 3) == 3)
 
 static BOOL
 IsSocketHandle (HANDLE h)
@@ -437,10 +438,6 @@ poll (struct pollfd *pfd, nfds_t nfd, int timeout)
 	    pfd[i].revents = happened;
 	    rc++;
 	  }
-	else
-	  {
-	    pfd[i].revents = 0;
-	  }
       }
 
   return rc;
@@ -449,7 +446,7 @@ poll (struct pollfd *pfd, nfds_t nfd, int timeout)
   static HANDLE hEvent;
   WSANETWORKEVENTS ev;
   HANDLE h, handle_array[FD_SETSIZE + 2];
-  DWORD ret, wait_timeout, nhandles, start = 0, elapsed, orig_timeout = 0;
+  DWORD ret, wait_timeout, nhandles;
   fd_set rfds, wfds, xfds;
   BOOL poll_again;
   MSG msg;
@@ -460,12 +457,6 @@ poll (struct pollfd *pfd, nfds_t nfd, int timeout)
     {
       errno = EINVAL;
       return -1;
-    }
-
-  if (timeout != INFTIM)
-    {
-      orig_timeout = timeout;
-      start = GetTickCount();
     }
 
   if (!hEvent)
@@ -612,13 +603,7 @@ restart:
 	rc++;
     }
 
-  if (!rc && orig_timeout && timeout != INFTIM)
-    {
-      elapsed = GetTickCount() - start;
-      timeout = elapsed >= orig_timeout ? 0 : orig_timeout - elapsed;
-    }
-
-  if (!rc && timeout)
+  if (!rc && timeout == INFTIM)
     {
       SleepEx (1, TRUE);
       goto restart;

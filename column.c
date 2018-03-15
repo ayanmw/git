@@ -1,5 +1,4 @@
 #include "cache.h"
-#include "config.h"
 #include "column.h"
 #include "string-list.h"
 #include "parse-options.h"
@@ -165,7 +164,7 @@ static void display_table(const struct string_list *list,
 	data.colopts = colopts;
 	data.opts = *opts;
 
-	ALLOC_ARRAY(data.len, list->nr);
+	data.len = xmalloc(sizeof(*data.len) * list->nr);
 	for (i = 0; i < list->nr; i++)
 		data.len[i] = item_length(colopts, list->items[i].string);
 
@@ -174,8 +173,9 @@ static void display_table(const struct string_list *list,
 	if (colopts & COL_DENSE)
 		shrink_columns(&data);
 
-	empty_cell = xmallocz(initial_width);
+	empty_cell = xmalloc(initial_width + 1);
 	memset(empty_cell, ' ', initial_width);
+	empty_cell[initial_width] = '\0';
 	for (y = 0; y < data.rows; y++) {
 		for (x = 0; x < data.cols; x++)
 			if (display_cell(&data, initial_width, empty_cell, x, y))
@@ -224,7 +224,7 @@ int finalize_colopts(unsigned int *colopts, int stdout_is_tty)
 		if (stdout_is_tty < 0)
 			stdout_is_tty = isatty(1);
 		*colopts &= ~COL_ENABLE_MASK;
-		if (stdout_is_tty || pager_in_use())
+		if (stdout_is_tty)
 			*colopts |= COL_ENABLED;
 	}
 	return 0;

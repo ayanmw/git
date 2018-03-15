@@ -25,14 +25,13 @@ static int send_request(const char *socket, const struct strbuf *out)
 		int r;
 
 		r = read_in_full(fd, in, sizeof(in));
-		if (r == 0 || (r < 0 && errno == ECONNRESET))
+		if (r == 0)
 			break;
 		if (r < 0)
 			die_errno("read error from cache daemon");
 		write_or_die(1, in, r);
 		got_data = 1;
 	}
-	close(fd);
 	return got_data;
 }
 
@@ -83,26 +82,13 @@ static void do_cache(const char *socket, const char *action, int timeout,
 	strbuf_release(&buf);
 }
 
-static char *get_socket_path(void)
-{
-	struct stat sb;
-	char *old_dir, *socket;
-	old_dir = expand_user_path("~/.git-credential-cache", 0);
-	if (old_dir && !stat(old_dir, &sb) && S_ISDIR(sb.st_mode))
-		socket = xstrfmt("%s/socket", old_dir);
-	else
-		socket = xdg_cache_home("credential/socket");
-	free(old_dir);
-	return socket;
-}
-
-int cmd_main(int argc, const char **argv)
+int main(int argc, const char **argv)
 {
 	char *socket_path = NULL;
 	int timeout = 900;
 	const char *op;
 	const char * const usage[] = {
-		"git credential-cache [<options>] <action>",
+		"git credential-cache [options] <action>",
 		NULL
 	};
 	struct option options[] = {
@@ -119,7 +105,7 @@ int cmd_main(int argc, const char **argv)
 	op = argv[0];
 
 	if (!socket_path)
-		socket_path = get_socket_path();
+		socket_path = expand_user_path("~/.git-credential-cache/socket");
 	if (!socket_path)
 		die("unable to find a suitable socket path; use --socket");
 

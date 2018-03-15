@@ -73,8 +73,7 @@ void bitmap_writer_build_type_index(struct pack_idx_entry **index,
 			break;
 
 		default:
-			real_type = sha1_object_info(entry->idx.oid.hash,
-						     NULL);
+			real_type = sha1_object_info(entry->idx.sha1, NULL);
 			break;
 		}
 
@@ -97,8 +96,7 @@ void bitmap_writer_build_type_index(struct pack_idx_entry **index,
 
 		default:
 			die("Missing type information for %s (%d/%d)",
-			    oid_to_hex(&entry->idx.oid), real_type,
-			    entry->type);
+			    sha1_to_hex(entry->idx.sha1), real_type, entry->type);
 		}
 	}
 }
@@ -150,10 +148,11 @@ static uint32_t find_object_pos(const unsigned char *sha1)
 	return entry->in_pack_pos;
 }
 
-static void show_object(struct object *object, const char *name, void *data)
+static void show_object(struct object *object, const struct name_path *path,
+			const char *last, void *data)
 {
 	struct bitmap *base = data;
-	bitmap_set(base, find_object_pos(object->oid.hash));
+	bitmap_set(base, find_object_pos(object->sha1));
 	mark_as_seen(object);
 }
 
@@ -166,12 +165,12 @@ static int
 add_to_include_set(struct bitmap *base, struct commit *commit)
 {
 	khiter_t hash_pos;
-	uint32_t bitmap_pos = find_object_pos(commit->object.oid.hash);
+	uint32_t bitmap_pos = find_object_pos(commit->object.sha1);
 
 	if (bitmap_get(base, bitmap_pos))
 		return 0;
 
-	hash_pos = kh_get_sha1(writer.bitmaps, commit->object.oid.hash);
+	hash_pos = kh_get_sha1(writer.bitmaps, commit->object.sha1);
 	if (hash_pos < kh_end(writer.bitmaps)) {
 		struct bitmapped_commit *bc = kh_value(writer.bitmaps, hash_pos);
 		bitmap_or_ewah(base, bc->bitmap);
@@ -297,7 +296,9 @@ void bitmap_writer_build(struct packing_data *to_pack)
 
 			traverse_commit_list(&revs, show_commit, show_object, base);
 
-			object_array_clear(&revs.pending);
+			revs.pending.nr = 0;
+			revs.pending.alloc = 0;
+			revs.pending.objects = NULL;
 
 			stored->bitmap = bitmap_to_ewah(base);
 			need_reset = 0;
@@ -307,10 +308,10 @@ void bitmap_writer_build(struct packing_data *to_pack)
 		if (i >= reuse_after)
 			stored->flags |= BITMAP_FLAG_REUSE;
 
-		hash_pos = kh_put_sha1(writer.bitmaps, object->oid.hash, &hash_ret);
+		hash_pos = kh_put_sha1(writer.bitmaps, object->sha1, &hash_ret);
 		if (hash_ret == 0)
 			die("Duplicate entry when writing index: %s",
-			    oid_to_hex(&object->oid));
+			    sha1_to_hex(object->sha1));
 
 		kh_value(writer.bitmaps, hash_pos) = stored;
 		display_progress(writer.progress, writer.selected_nr - i);
@@ -385,7 +386,8 @@ void bitmap_writer_select_commits(struct commit **indexed_commits,
 {
 	unsigned int i = 0, j, next;
 
-	QSORT(indexed_commits, indexed_commits_nr, date_compare);
+	qsort(indexed_commits, indexed_commits_nr, sizeof(indexed_commits[0]),
+	      date_compare);
 
 	if (writer.show_progress)
 		writer.progress = start_progress("Selecting bitmap commits", 0);
@@ -412,14 +414,14 @@ void bitmap_writer_select_commits(struct commit **indexed_commits,
 
 		if (next == 0) {
 			chosen = indexed_commits[i];
-			reused_bitmap = find_reused_bitmap(chosen->object.oid.hash);
+			reused_bitmap = find_reused_bitmap(chosen->object.sha1);
 		} else {
 			chosen = indexed_commits[i + next];
 
 			for (j = 0; j <= next; ++j) {
 				struct commit *cm = indexed_commits[i + j];
 
-				reused_bitmap = find_reused_bitmap(cm->object.oid.hash);
+				reused_bitmap = find_reused_bitmap(cm->object.sha1);
 				if (reused_bitmap || (cm->object.flags & NEEDS_BITMAP) != 0) {
 					chosen = cm;
 					break;
@@ -440,29 +442,29 @@ void bitmap_writer_select_commits(struct commit **indexed_commits,
 }
 
 
-static int hashwrite_ewah_helper(void *f, const void *buf, size_t len)
+static int sha1write_ewah_helper(void *f, const void *buf, size_t len)
 {
-	/* hashwrite will die on error */
-	hashwrite(f, buf, len);
+	/* sha1write will die on error */
+	sha1write(f, buf, len);
 	return len;
 }
 
 /**
  * Write the bitmap index to disk
  */
-static inline void dump_bitmap(struct hashfile *f, struct ewah_bitmap *bitmap)
+static inline void dump_bitmap(struct sha1file *f, struct ewah_bitmap *bitmap)
 {
-	if (ewah_serialize_to(bitmap, hashwrite_ewah_helper, f) < 0)
+	if (ewah_serialize_to(bitmap, sha1write_ewah_helper, f) < 0)
 		die("Failed to write bitmap index");
 }
 
 static const unsigned char *sha1_access(size_t pos, void *table)
 {
 	struct pack_idx_entry **index = table;
-	return index[pos]->oid.hash;
+	return index[pos]->sha1;
 }
 
-static void write_selected_commits_v1(struct hashfile *f,
+static void write_selected_commits_v1(struct sha1file *f,
 				      struct pack_idx_entry **index,
 				      uint32_t index_nr)
 {
@@ -472,20 +474,20 @@ static void write_selected_commits_v1(struct hashfile *f,
 		struct bitmapped_commit *stored = &writer.selected[i];
 
 		int commit_pos =
-			sha1_pos(stored->commit->object.oid.hash, index, index_nr, sha1_access);
+			sha1_pos(stored->commit->object.sha1, index, index_nr, sha1_access);
 
 		if (commit_pos < 0)
 			die("BUG: trying to write commit not in index");
 
-		hashwrite_be32(f, commit_pos);
-		hashwrite_u8(f, stored->xor_offset);
-		hashwrite_u8(f, stored->flags);
+		sha1write_be32(f, commit_pos);
+		sha1write_u8(f, stored->xor_offset);
+		sha1write_u8(f, stored->flags);
 
 		dump_bitmap(f, stored->write_as);
 	}
 }
 
-static void write_hash_cache(struct hashfile *f,
+static void write_hash_cache(struct sha1file *f,
 			     struct pack_idx_entry **index,
 			     uint32_t index_nr)
 {
@@ -494,7 +496,7 @@ static void write_hash_cache(struct hashfile *f,
 	for (i = 0; i < index_nr; ++i) {
 		struct object_entry *entry = (struct object_entry *)index[i];
 		uint32_t hash_value = htonl(entry->hash);
-		hashwrite(f, &hash_value, sizeof(hash_value));
+		sha1write(f, &hash_value, sizeof(hash_value));
 	}
 }
 
@@ -508,16 +510,18 @@ void bitmap_writer_finish(struct pack_idx_entry **index,
 			  const char *filename,
 			  uint16_t options)
 {
+	static char tmp_file[PATH_MAX];
 	static uint16_t default_version = 1;
 	static uint16_t flags = BITMAP_OPT_FULL_DAG;
-	struct strbuf tmp_file = STRBUF_INIT;
-	struct hashfile *f;
+	struct sha1file *f;
 
 	struct bitmap_disk_header header;
 
-	int fd = odb_mkstemp(&tmp_file, "pack/tmp_bitmap_XXXXXX");
+	int fd = odb_mkstemp(tmp_file, sizeof(tmp_file), "pack/tmp_bitmap_XXXXXX");
 
-	f = hashfd(fd, tmp_file.buf);
+	if (fd < 0)
+		die_errno("unable to create '%s'", tmp_file);
+	f = sha1fd(fd, tmp_file);
 
 	memcpy(header.magic, BITMAP_IDX_SIGNATURE, sizeof(BITMAP_IDX_SIGNATURE));
 	header.version = htons(default_version);
@@ -525,7 +529,7 @@ void bitmap_writer_finish(struct pack_idx_entry **index,
 	header.entry_count = htonl(writer.selected_nr);
 	hashcpy(header.checksum, writer.pack_checksum);
 
-	hashwrite(f, &header, sizeof(header));
+	sha1write(f, &header, sizeof(header));
 	dump_bitmap(f, writer.commits);
 	dump_bitmap(f, writer.trees);
 	dump_bitmap(f, writer.blobs);
@@ -535,13 +539,11 @@ void bitmap_writer_finish(struct pack_idx_entry **index,
 	if (options & BITMAP_OPT_HASH_CACHE)
 		write_hash_cache(f, index, index_nr);
 
-	hashclose(f, NULL, CSUM_FSYNC);
+	sha1close(f, NULL, CSUM_FSYNC);
 
-	if (adjust_shared_perm(tmp_file.buf))
+	if (adjust_shared_perm(tmp_file))
 		die_errno("unable to make temporary bitmap file readable");
 
-	if (rename(tmp_file.buf, filename))
+	if (rename(tmp_file, filename))
 		die_errno("unable to rename temporary bitmap file to '%s'", filename);
-
-	strbuf_release(&tmp_file);
 }

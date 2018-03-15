@@ -8,9 +8,9 @@
 
 #include "builtin.h"
 #include "cache.h"
-#include "config.h"
 #include "dir.h"
 #include "parse-options.h"
+#include "refs.h"
 #include "string-list.h"
 #include "quote.h"
 #include "column.h"
@@ -33,6 +33,15 @@ static const char *msg_skip_git_dir = N_("Skipping repository %s\n");
 static const char *msg_would_skip_git_dir = N_("Would skip repository %s\n");
 static const char *msg_warn_remove_failed = N_("failed to remove %s");
 
+static int clean_use_color = -1;
+static char clean_colors[][COLOR_MAXLEN] = {
+	GIT_COLOR_RESET,
+	GIT_COLOR_NORMAL,	/* PLAIN */
+	GIT_COLOR_BOLD_BLUE,	/* PROMPT */
+	GIT_COLOR_BOLD,		/* HEADER */
+	GIT_COLOR_BOLD_RED,	/* HELP */
+	GIT_COLOR_BOLD_RED,	/* ERROR */
+};
 enum color_clean {
 	CLEAN_COLOR_RESET = 0,
 	CLEAN_COLOR_PLAIN = 1,
@@ -40,16 +49,6 @@ enum color_clean {
 	CLEAN_COLOR_HEADER = 3,
 	CLEAN_COLOR_HELP = 4,
 	CLEAN_COLOR_ERROR = 5
-};
-
-static int clean_use_color = -1;
-static char clean_colors[][COLOR_MAXLEN] = {
-	[CLEAN_COLOR_ERROR] = GIT_COLOR_BOLD_RED,
-	[CLEAN_COLOR_HEADER] = GIT_COLOR_BOLD,
-	[CLEAN_COLOR_HELP] = GIT_COLOR_BOLD_RED,
-	[CLEAN_COLOR_PLAIN] = GIT_COLOR_NORMAL,
-	[CLEAN_COLOR_PROMPT] = GIT_COLOR_BOLD_BLUE,
-	[CLEAN_COLOR_RESET] = GIT_COLOR_RESET,
 };
 
 #define MENU_OPTS_SINGLETON		01
@@ -156,11 +155,13 @@ static int remove_dirs(struct strbuf *path, const char *prefix, int force_flag,
 	struct strbuf quoted = STRBUF_INIT;
 	struct dirent *e;
 	int res = 0, ret = 0, gone = 1, original_len = path->len, len;
+	unsigned char submodule_head[20];
 	struct string_list dels = STRING_LIST_INIT_DUP;
 
 	*dir_gone = 1;
 
-	if ((force_flag & REMOVE_DIR_KEEP_NESTED_GIT) && is_nonbare_repository_dir(path)) {
+	if ((force_flag & REMOVE_DIR_KEEP_NESTED_GIT) &&
+			!resolve_gitlink_ref(path->buf, "HEAD", submodule_head)) {
 		if (!quiet) {
 			quote_path_relative(path->buf, prefix, &quoted);
 			printf(dry_run ?  _(msg_would_skip_git_dir) : _(msg_skip_git_dir),
@@ -168,7 +169,7 @@ static int remove_dirs(struct strbuf *path, const char *prefix, int force_flag,
 		}
 
 		*dir_gone = 0;
-		goto out;
+		return 0;
 	}
 
 	dir = opendir(path->buf);
@@ -176,17 +177,15 @@ static int remove_dirs(struct strbuf *path, const char *prefix, int force_flag,
 		/* an empty dir could be removed even if it is unreadble */
 		res = dry_run ? 0 : rmdir(path->buf);
 		if (res) {
-			int saved_errno = errno;
 			quote_path_relative(path->buf, prefix, &quoted);
-			errno = saved_errno;
-			warning_errno(_(msg_warn_remove_failed), quoted.buf);
+			warning(_(msg_warn_remove_failed), quoted.buf);
 			*dir_gone = 0;
 		}
-		ret = res;
-		goto out;
+		return res;
 	}
 
-	strbuf_complete(path, '/');
+	if (path->buf[original_len - 1] != '/')
+		strbuf_addch(path, '/');
 
 	len = path->len;
 	while ((e = readdir(dir)) != NULL) {
@@ -213,10 +212,8 @@ static int remove_dirs(struct strbuf *path, const char *prefix, int force_flag,
 				quote_path_relative(path->buf, prefix, &quoted);
 				string_list_append(&dels, quoted.buf);
 			} else {
-				int saved_errno = errno;
 				quote_path_relative(path->buf, prefix, &quoted);
-				errno = saved_errno;
-				warning_errno(_(msg_warn_remove_failed), quoted.buf);
+				warning(_(msg_warn_remove_failed), quoted.buf);
 				*dir_gone = 0;
 				ret = 1;
 			}
@@ -237,10 +234,8 @@ static int remove_dirs(struct strbuf *path, const char *prefix, int force_flag,
 		if (!res)
 			*dir_gone = 1;
 		else {
-			int saved_errno = errno;
 			quote_path_relative(path->buf, prefix, &quoted);
-			errno = saved_errno;
-			warning_errno(_(msg_warn_remove_failed), quoted.buf);
+			warning(_(msg_warn_remove_failed), quoted.buf);
 			*dir_gone = 0;
 			ret = 1;
 		}
@@ -251,8 +246,6 @@ static int remove_dirs(struct strbuf *path, const char *prefix, int force_flag,
 		for (i = 0; i < dels.nr; i++)
 			printf(dry_run ?  _(msg_would_remove) : _(msg_remove), dels.items[i].string);
 	}
-out:
-	strbuf_release(&quoted);
 	string_list_clear(&dels, 0);
 	return ret;
 }
@@ -298,11 +291,11 @@ static void pretty_print_menus(struct string_list *menu_list)
 static void prompt_help_cmd(int singleton)
 {
 	clean_print_color(CLEAN_COLOR_HELP);
-	printf(singleton ?
+	printf_ln(singleton ?
 		  _("Prompt help:\n"
 		    "1          - select a numbered item\n"
 		    "foo        - select item based on unique prefix\n"
-		    "           - (empty) select nothing\n") :
+		    "           - (empty) select nothing") :
 		  _("Prompt help:\n"
 		    "1          - select a single item\n"
 		    "3-5        - select a range of items\n"
@@ -310,7 +303,7 @@ static void prompt_help_cmd(int singleton)
 		    "foo        - select item based on unique prefix\n"
 		    "-...       - unselect specified items\n"
 		    "*          - choose all items\n"
-		    "           - (empty) finish selecting\n"));
+		    "           - (empty) finish selecting"));
 	clean_print_color(CLEAN_COLOR_RESET);
 }
 
@@ -321,6 +314,7 @@ static void print_highlight_menu_stuff(struct menu_stuff *stuff, int **chosen)
 {
 	struct string_list menu_list = STRING_LIST_INIT_DUP;
 	struct strbuf menu = STRBUF_INIT;
+	struct strbuf buf = STRBUF_INIT;
 	struct menu_item *menu_item;
 	struct string_list_item *string_list_item;
 	int i;
@@ -369,6 +363,7 @@ static void print_highlight_menu_stuff(struct menu_stuff *stuff, int **chosen)
 	pretty_print_menus(&menu_list);
 
 	strbuf_release(&menu);
+	strbuf_release(&buf);
 	string_list_clear(&menu_list, 0);
 }
 
@@ -519,7 +514,7 @@ static int parse_choice(struct menu_stuff *menu_stuff,
 		if (top <= 0 || bottom <= 0 || top > menu_stuff->nr || bottom > top ||
 		    (is_single && bottom != top)) {
 			clean_print_color(CLEAN_COLOR_ERROR);
-			printf(_("Huh (%s)?\n"), (*ptr)->buf);
+			printf_ln(_("Huh (%s)?"), (*ptr)->buf);
 			clean_print_color(CLEAN_COLOR_RESET);
 			continue;
 		}
@@ -554,7 +549,7 @@ static int *list_and_choose(struct menu_opts *opts, struct menu_stuff *stuff)
 	int eof = 0;
 	int i;
 
-	ALLOC_ARRAY(chosen, stuff->nr);
+	chosen = xmalloc(sizeof(int) * stuff->nr);
 	/* set chosen as uninitialized */
 	for (i = 0; i < stuff->nr; i++)
 		chosen[i] = -1;
@@ -581,7 +576,7 @@ static int *list_and_choose(struct menu_opts *opts, struct menu_stuff *stuff)
 			       clean_get_color(CLEAN_COLOR_RESET));
 		}
 
-		if (strbuf_getline_lf(&choice, stdin) != EOF) {
+		if (strbuf_getline(&choice, stdin, '\n') != EOF) {
 			strbuf_trim(&choice);
 		} else {
 			eof = 1;
@@ -626,7 +621,7 @@ static int *list_and_choose(struct menu_opts *opts, struct menu_stuff *stuff)
 				nr += chosen[i];
 		}
 
-		result = xcalloc(st_add(nr, 1), sizeof(int));
+		result = xcalloc(nr + 1, sizeof(int));
 		for (i = 0; i < stuff->nr && j < nr; i++) {
 			if (chosen[i])
 				result[j++] = i;
@@ -663,7 +658,7 @@ static int filter_by_patterns_cmd(void)
 		clean_print_color(CLEAN_COLOR_PROMPT);
 		printf(_("Input ignore patterns>> "));
 		clean_print_color(CLEAN_COLOR_RESET);
-		if (strbuf_getline_lf(&confirm, stdin) != EOF)
+		if (strbuf_getline(&confirm, stdin, '\n') != EOF)
 			strbuf_trim(&confirm);
 		else
 			putchar('\n');
@@ -688,7 +683,7 @@ static int filter_by_patterns_cmd(void)
 		for_each_string_list_item(item, &del_list) {
 			int dtype = DT_UNKNOWN;
 
-			if (is_excluded(&dir, &the_index, item->string, &dtype)) {
+			if (is_excluded(&dir, item->string, &dtype)) {
 				*item->string = '\0';
 				changed++;
 			}
@@ -761,7 +756,7 @@ static int ask_each_cmd(void)
 			qname = quote_path_relative(item->string, NULL, &buf);
 			/* TRANSLATORS: Make sure to keep [y/N] as is */
 			printf(_("Remove %s [y/N]? "), qname);
-			if (strbuf_getline_lf(&confirm, stdin) != EOF) {
+			if (strbuf_getline(&confirm, stdin, '\n') != EOF) {
 				strbuf_trim(&confirm);
 			} else {
 				putchar('\n');
@@ -785,7 +780,7 @@ static int ask_each_cmd(void)
 static int quit_cmd(void)
 {
 	string_list_clear(&del_list, 0);
-	printf(_("Bye.\n"));
+	printf_ln(_("Bye."));
 	return MENU_RETURN_NO_LOOP;
 }
 
@@ -842,7 +837,8 @@ static void interactive_main_loop(void)
 			int ret;
 			ret = menus[*chosen].fn();
 			if (ret != MENU_RETURN_NO_LOOP) {
-				FREE_AND_NULL(chosen);
+				free(chosen);
+				chosen = NULL;
 				if (!del_list.nr) {
 					clean_print_color(CLEAN_COLOR_ERROR);
 					printf_ln(_("No more files to clean, exiting."));
@@ -855,41 +851,10 @@ static void interactive_main_loop(void)
 			quit_cmd();
 		}
 
-		FREE_AND_NULL(chosen);
+		free(chosen);
+		chosen = NULL;
 		break;
 	}
-}
-
-static void correct_untracked_entries(struct dir_struct *dir)
-{
-	int src, dst, ign;
-
-	for (src = dst = ign = 0; src < dir->nr; src++) {
-		/* skip paths in ignored[] that cannot be inside entries[src] */
-		while (ign < dir->ignored_nr &&
-		       0 <= cmp_dir_entry(&dir->entries[src], &dir->ignored[ign]))
-			ign++;
-
-		if (ign < dir->ignored_nr &&
-		    check_dir_entry_contains(dir->entries[src], dir->ignored[ign])) {
-			/* entries[src] contains an ignored path, so we drop it */
-			free(dir->entries[src]);
-		} else {
-			struct dir_entry *ent = dir->entries[src++];
-
-			/* entries[src] does not contain an ignored path, so we keep it */
-			dir->entries[dst++] = ent;
-
-			/* then discard paths in entries[] contained inside entries[src] */
-			while (src < dir->nr &&
-			       check_dir_entry_contains(ent, dir->entries[src]))
-				free(dir->entries[src++]);
-
-			/* compensate for the outer loop's loop control */
-			src--;
-		}
-	}
-	dir->nr = dst;
 }
 
 int cmd_clean(int argc, const char **argv, const char *prefix)
@@ -909,7 +874,7 @@ int cmd_clean(int argc, const char **argv, const char *prefix)
 	struct option options[] = {
 		OPT__QUIET(&quiet, N_("do not print names of files removed")),
 		OPT__DRY_RUN(&dry_run, N_("dry run")),
-		OPT__FORCE(&force, N_("force"), PARSE_OPT_NOCOMPLETE),
+		OPT__FORCE(&force, N_("force")),
 		OPT_BOOL('i', "interactive", &interactive, N_("interactive cleaning")),
 		OPT_BOOL('d', NULL, &remove_directories,
 				N_("remove whole directories")),
@@ -951,9 +916,6 @@ int cmd_clean(int argc, const char **argv, const char *prefix)
 
 	dir.flags |= DIR_SHOW_OTHER_DIRECTORIES;
 
-	if (remove_directories)
-		dir.flags |= DIR_SHOW_IGNORED_TOO | DIR_KEEP_UNTRACKED_CONTENTS;
-
 	if (read_cache() < 0)
 		die(_("index file corrupt"));
 
@@ -968,8 +930,7 @@ int cmd_clean(int argc, const char **argv, const char *prefix)
 		       PATHSPEC_PREFER_CWD,
 		       prefix, argv);
 
-	fill_directory(&dir, &the_index, &pathspec);
-	correct_untracked_entries(&dir);
+	fill_directory(&dir, &pathspec);
 
 	for (i = 0; i < dir.nr; i++) {
 		struct dir_entry *ent = dir.entries[i];
@@ -980,14 +941,14 @@ int cmd_clean(int argc, const char **argv, const char *prefix)
 		if (!cache_name_is_other(ent->name, ent->len))
 			continue;
 
+		if (lstat(ent->name, &st))
+			die_errno("Cannot lstat '%s'", ent->name);
+
 		if (pathspec.nr)
 			matches = dir_path_match(ent, &pathspec, 0, NULL);
 
 		if (pathspec.nr && !matches)
 			continue;
-
-		if (lstat(ent->name, &st))
-			die_errno("Cannot lstat '%s'", ent->name);
 
 		if (S_ISDIR(st.st_mode) && !remove_directories &&
 		    matches != MATCHED_EXACTLY)
@@ -996,12 +957,6 @@ int cmd_clean(int argc, const char **argv, const char *prefix)
 		rel = relative_path(ent->name, prefix, &buf);
 		string_list_append(&del_list, rel);
 	}
-
-	for (i = 0; i < dir.nr; i++)
-		free(dir.entries[i]);
-
-	for (i = 0; i < dir.ignored_nr; i++)
-		free(dir.ignored[i]);
 
 	if (interactive && del_list.nr > 0)
 		interactive_main_loop();
@@ -1032,10 +987,8 @@ int cmd_clean(int argc, const char **argv, const char *prefix)
 		} else {
 			res = dry_run ? 0 : unlink(abs_path.buf);
 			if (res) {
-				int saved_errno = errno;
 				qname = quote_path_relative(item->string, NULL, &buf);
-				errno = saved_errno;
-				warning_errno(_(msg_warn_remove_failed), qname);
+				warning(_(msg_warn_remove_failed), qname);
 				errors++;
 			} else if (!quiet) {
 				qname = quote_path_relative(item->string, NULL, &buf);

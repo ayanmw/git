@@ -10,9 +10,9 @@ int cmd_credential(int argc, const char **argv, const char *prefix)
 	const char *op;
 	struct credential c = CREDENTIAL_INIT;
 
-	if (argc != 2 || !strcmp(argv[1], "-h"))
-		usage(usage_msg);
 	op = argv[1];
+	if (!op)
+		usage(usage_msg);
 
 	if (credential_read(&c, stdin) < 0)
 		die("unable to read credential from stdin");

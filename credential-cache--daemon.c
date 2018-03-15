@@ -1,13 +1,27 @@
 #include "cache.h"
-#include "config.h"
-#include "tempfile.h"
 #include "credential.h"
 #include "unix-socket.h"
+#include "sigchain.h"
 #include "parse-options.h"
+
+static const char *socket_path;
+
+static void cleanup_socket(void)
+{
+	if (socket_path)
+		unlink(socket_path);
+}
+
+static void cleanup_socket_on_signal(int sig)
+{
+	cleanup_socket();
+	sigchain_pop(sig);
+	raise(sig);
+}
 
 struct credential_cache_entry {
 	struct credential item;
-	timestamp_t expiration;
+	unsigned long expiration;
 };
 static struct credential_cache_entry *entries;
 static int entries_nr;
@@ -46,12 +60,12 @@ static void remove_credential(const struct credential *c)
 		e->expiration = 0;
 }
 
-static timestamp_t check_expirations(void)
+static int check_expirations(void)
 {
-	static timestamp_t wait_for_entry_until;
+	static unsigned long wait_for_entry_until;
 	int i = 0;
-	timestamp_t now = time(NULL);
-	timestamp_t next = TIME_MAX;
+	unsigned long now = time(NULL);
+	unsigned long next = (unsigned long)-1;
 
 	/*
 	 * Initially give the client 30 seconds to actually contact us
@@ -95,12 +109,12 @@ static int read_request(FILE *fh, struct credential *c,
 	static struct strbuf item = STRBUF_INIT;
 	const char *p;
 
-	strbuf_getline_lf(&item, fh);
+	strbuf_getline(&item, fh, '\n');
 	if (!skip_prefix(item.buf, "action=", &p))
 		return error("client sent bogus action line: %s", item.buf);
 	strbuf_addstr(action, p);
 
-	strbuf_getline_lf(&item, fh);
+	strbuf_getline(&item, fh, '\n');
 	if (!skip_prefix(item.buf, "timeout=", &p))
 		return error("client sent bogus timeout line: %s", item.buf);
 	*timeout = atoi(p);
@@ -125,17 +139,8 @@ static void serve_one_client(FILE *in, FILE *out)
 			fprintf(out, "password=%s\n", e->item.password);
 		}
 	}
-	else if (!strcmp(action.buf, "exit")) {
-		/*
-		 * It's important that we clean up our socket first, and then
-		 * signal the client only once we have finished the cleanup.
-		 * Calling exit() directly does this, because we clean up in
-		 * our atexit() handler, and then signal the client when our
-		 * process actually ends, which closes the socket and gives
-		 * them EOF.
-		 */
+	else if (!strcmp(action.buf, "exit"))
 		exit(0);
-	}
 	else if (!strcmp(action.buf, "erase"))
 		remove_credential(&c);
 	else if (!strcmp(action.buf, "store")) {
@@ -158,7 +163,7 @@ static void serve_one_client(FILE *in, FILE *out)
 static int serve_cache_loop(int fd)
 {
 	struct pollfd pfd;
-	timestamp_t wakeup;
+	unsigned long wakeup;
 
 	wakeup = check_expirations();
 	if (!wakeup)
@@ -178,12 +183,12 @@ static int serve_cache_loop(int fd)
 
 		client = accept(fd, NULL, NULL);
 		if (client < 0) {
-			warning_errno("accept failed");
+			warning("accept failed: %s", strerror(errno));
 			return 1;
 		}
 		client2 = dup(client);
 		if (client2 < 0) {
-			warning_errno("dup failed");
+			warning("dup failed: %s", strerror(errno));
 			close(client);
 			return 1;
 		}
@@ -216,14 +221,15 @@ static void serve_cache(const char *socket_path, int debug)
 		; /* nothing */
 
 	close(fd);
+	unlink(socket_path);
 }
 
-static const char permissions_advice[] = N_(
+static const char permissions_advice[] =
 "The permissions on your socket directory are too loose; other\n"
 "users may be able to read your cached credentials. Consider running:\n"
 "\n"
-"	chmod 0700 %s");
-static void init_socket_directory(const char *path)
+"	chmod 0700 %s";
+static void check_socket_directory(const char *path)
 {
 	struct stat st;
 	char *path_copy = xstrdup(path);
@@ -231,36 +237,26 @@ static void init_socket_directory(const char *path)
 
 	if (!stat(dir, &st)) {
 		if (st.st_mode & 077)
-			die(_(permissions_advice), dir);
-	} else {
-		/*
-		 * We must be sure to create the directory with the correct mode,
-		 * not just chmod it after the fact; otherwise, there is a race
-		 * condition in which somebody can chdir to it, sleep, then try to open
-		 * our protected socket.
-		 */
-		if (safe_create_leading_directories_const(dir) < 0)
-			die_errno("unable to create directories for '%s'", dir);
-		if (mkdir(dir, 0700) < 0)
-			die_errno("unable to mkdir '%s'", dir);
+			die(permissions_advice, dir);
+		free(path_copy);
+		return;
 	}
 
-	if (chdir(dir))
-		/*
-		 * We don't actually care what our cwd is; we chdir here just to
-		 * be a friendly daemon and avoid tying up our original cwd.
-		 * If this fails, it's OK to just continue without that benefit.
-		 */
-		;
-
+	/*
+	 * We must be sure to create the directory with the correct mode,
+	 * not just chmod it after the fact; otherwise, there is a race
+	 * condition in which somebody can chdir to it, sleep, then try to open
+	 * our protected socket.
+	 */
+	if (safe_create_leading_directories_const(dir) < 0)
+		die_errno("unable to create directories for '%s'", dir);
+	if (mkdir(dir, 0700) < 0)
+		die_errno("unable to mkdir '%s'", dir);
 	free(path_copy);
 }
 
-int cmd_main(int argc, const char **argv)
+int main(int argc, const char **argv)
 {
-	struct tempfile *socket_file;
-	const char *socket_path;
-	int ignore_sighup = 0;
 	static const char *usage[] = {
 		"git-credential-cache--daemon [opts] <socket_path>",
 		NULL
@@ -272,25 +268,17 @@ int cmd_main(int argc, const char **argv)
 		OPT_END()
 	};
 
-	git_config_get_bool("credentialcache.ignoresighup", &ignore_sighup);
-
 	argc = parse_options(argc, argv, NULL, options, usage, 0);
 	socket_path = argv[0];
 
 	if (!socket_path)
 		usage_with_options(usage, options);
+	check_socket_directory(socket_path);
 
-	if (!is_absolute_path(socket_path))
-		die("socket directory must be an absolute path");
-
-	init_socket_directory(socket_path);
-	socket_file = register_tempfile(socket_path);
-
-	if (ignore_sighup)
-		signal(SIGHUP, SIG_IGN);
+	atexit(cleanup_socket);
+	sigchain_push_common(cleanup_socket_on_signal);
 
 	serve_cache(socket_path, debug);
-	delete_tempfile(&socket_file);
 
 	return 0;
 }

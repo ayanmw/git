@@ -6,12 +6,6 @@ test_description='test fetching over git protocol'
 . "$TEST_DIRECTORY"/lib-git-daemon.sh
 start_git_daemon
 
-check_verbose_connect () {
-	grep -F "Looking up 127.0.0.1 ..." stderr &&
-	grep -F "Connecting to 127.0.0.1 (port " stderr &&
-	grep -F "done." stderr
-}
-
 test_expect_success 'setup repository' '
 	git config push.default matching &&
 	echo content >file &&
@@ -30,8 +24,7 @@ test_expect_success 'create git-accessible bare repository' '
 '
 
 test_expect_success 'clone git repository' '
-	git clone -v "$GIT_DAEMON_URL/repo.git" clone 2>stderr &&
-	check_verbose_connect &&
+	git clone "$GIT_DAEMON_URL/repo.git" clone &&
 	test_cmp file clone/file
 '
 
@@ -39,19 +32,8 @@ test_expect_success 'fetch changes via git protocol' '
 	echo content >>file &&
 	git commit -a -m two &&
 	git push public &&
-	(cd clone && git pull -v) 2>stderr &&
-	check_verbose_connect &&
+	(cd clone && git pull) &&
 	test_cmp file clone/file
-'
-
-test_expect_success 'no-op fetch -v stderr is as expected' '
-	(cd clone && git fetch -v) 2>stderr &&
-	check_verbose_connect
-'
-
-test_expect_success 'no-op fetch without "-v" is quiet' '
-	(cd clone && git fetch 2>../stderr) &&
-	! test -s stderr
 '
 
 test_expect_success 'remote detects correct HEAD' '
@@ -75,7 +57,7 @@ test_expect_success 'prepare pack objects' '
 test_expect_success 'fetch notices corrupt pack' '
 	cp -R "$GIT_DAEMON_DOCUMENT_ROOT_PATH"/repo_pack.git "$GIT_DAEMON_DOCUMENT_ROOT_PATH"/repo_bad1.git &&
 	(cd "$GIT_DAEMON_DOCUMENT_ROOT_PATH"/repo_bad1.git &&
-	 p=$(ls objects/pack/pack-*.pack) &&
+	 p=`ls objects/pack/pack-*.pack` &&
 	 chmod u+w $p &&
 	 printf %0256d 0 | dd of=$p bs=256 count=1 seek=1 conv=notrunc
 	) &&
@@ -83,14 +65,14 @@ test_expect_success 'fetch notices corrupt pack' '
 	(cd repo_bad1.git &&
 	 git --bare init &&
 	 test_must_fail git --bare fetch "$GIT_DAEMON_URL/repo_bad1.git" &&
-	 test 0 = $(ls objects/pack/pack-*.pack | wc -l)
+	 test 0 = `ls objects/pack/pack-*.pack | wc -l`
 	)
 '
 
 test_expect_success 'fetch notices corrupt idx' '
 	cp -R "$GIT_DAEMON_DOCUMENT_ROOT_PATH"/repo_pack.git "$GIT_DAEMON_DOCUMENT_ROOT_PATH"/repo_bad2.git &&
 	(cd "$GIT_DAEMON_DOCUMENT_ROOT_PATH"/repo_bad2.git &&
-	 p=$(ls objects/pack/pack-*.idx) &&
+	 p=`ls objects/pack/pack-*.idx` &&
 	 chmod u+w $p &&
 	 printf %0256d 0 | dd of=$p bs=256 count=1 seek=1 conv=notrunc
 	) &&
@@ -98,7 +80,7 @@ test_expect_success 'fetch notices corrupt idx' '
 	(cd repo_bad2.git &&
 	 git --bare init &&
 	 test_must_fail git --bare fetch "$GIT_DAEMON_URL/repo_bad2.git" &&
-	 test 0 = $(ls objects/pack | wc -l)
+	 test 0 = `ls objects/pack | wc -l`
 	)
 '
 
@@ -167,48 +149,23 @@ test_expect_success 'access repo via interpolated hostname' '
 	git init --bare "$repo" &&
 	git push "$repo" HEAD &&
 	>"$repo"/git-daemon-export-ok &&
+	rm -rf tmp.git &&
 	GIT_OVERRIDE_VIRTUAL_HOST=localhost \
-		git ls-remote "$GIT_DAEMON_URL/interp.git" &&
+		git clone --bare "$GIT_DAEMON_URL/interp.git" tmp.git &&
+	rm -rf tmp.git &&
 	GIT_OVERRIDE_VIRTUAL_HOST=LOCALHOST \
-		git ls-remote "$GIT_DAEMON_URL/interp.git"
+		git clone --bare "$GIT_DAEMON_URL/interp.git" tmp.git
 '
 
 test_expect_success 'hostname cannot break out of directory' '
+	rm -rf tmp.git &&
 	repo="$GIT_DAEMON_DOCUMENT_ROOT_PATH/../escape.git" &&
 	git init --bare "$repo" &&
 	git push "$repo" HEAD &&
 	>"$repo"/git-daemon-export-ok &&
 	test_must_fail \
 		env GIT_OVERRIDE_VIRTUAL_HOST=.. \
-		git ls-remote "$GIT_DAEMON_URL/escape.git"
-'
-
-test_expect_success 'daemon log records all attributes' '
-	cat >expect <<-\EOF &&
-	Extended attribute "host": localhost
-	Extended attribute "protocol": version=1
-	EOF
-	>daemon.log &&
-	GIT_OVERRIDE_VIRTUAL_HOST=localhost \
-		git -c protocol.version=1 \
-			ls-remote "$GIT_DAEMON_URL/interp.git" &&
-	grep -i extended.attribute daemon.log | cut -d" " -f2- >actual &&
-	test_cmp expect actual
-'
-
-test_expect_success FAKENC 'hostname interpolation works after LF-stripping' '
-	{
-		printf "git-upload-pack /interp.git\n\0host=localhost" | packetize
-		printf "0000"
-	} >input &&
-	fake_nc "$GIT_DAEMON_HOST_PORT" <input >output &&
-	depacketize <output >output.raw &&
-
-	# just pick out the value of master, which avoids any protocol
-	# particulars
-	perl -lne "print \$1 if m{^(\\S+) refs/heads/master}" <output.raw >actual &&
-	git -C "$repo" rev-parse master >expect &&
-	test_cmp expect actual
+		git clone --bare "$GIT_DAEMON_URL/escape.git" tmp.git
 '
 
 stop_git_daemon

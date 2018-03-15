@@ -13,7 +13,7 @@ constructor dialog {} {
 	global use_ttk NS
 	make_dialog top w
 	wm withdraw $w
-	wm title $top [mc "%s (%s): Checkout Branch" [appname] [reponame]]
+	wm title $top [append "[appname] ([reponame]): " [mc "Checkout Branch"]]
 	if {$top ne {.}} {
 		wm geometry $top "+[winfo rootx .]+[winfo rooty .]"
 	}

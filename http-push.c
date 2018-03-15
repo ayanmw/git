@@ -10,8 +10,6 @@
 #include "remote.h"
 #include "list-objects.h"
 #include "sigchain.h"
-#include "argv-array.h"
-#include "packfile.h"
 
 #ifdef EXPAT_NEEDS_XMLPARSE_H
 #include <xmlparse.h>
@@ -212,7 +210,7 @@ static void curl_setup_http(CURL *curl, const char *url,
 static struct curl_slist *get_dav_token_headers(struct remote_lock *lock, enum dav_header_flag options)
 {
 	struct strbuf buf = STRBUF_INIT;
-	struct curl_slist *dav_headers = http_copy_default_headers();
+	struct curl_slist *dav_headers = NULL;
 
 	if (options & DAV_HEADER_IF) {
 		strbuf_addf(&buf, "If: (<%s>)", lock->token);
@@ -252,7 +250,7 @@ static void start_fetch_loose(struct transfer_request *request)
 	struct active_request_slot *slot;
 	struct http_object_request *obj_req;
 
-	obj_req = new_http_object_request(repo->url, request->obj->oid.hash);
+	obj_req = new_http_object_request(repo->url, request->obj->sha1);
 	if (obj_req == NULL) {
 		request->state = ABORTED;
 		return;
@@ -276,7 +274,7 @@ static void start_fetch_loose(struct transfer_request *request)
 
 static void start_mkcol(struct transfer_request *request)
 {
-	char *hex = oid_to_hex(&request->obj->oid);
+	char *hex = sha1_to_hex(request->obj->sha1);
 	struct active_request_slot *slot;
 
 	request->url = get_remote_object_url(repo->url, hex, 1);
@@ -292,7 +290,8 @@ static void start_mkcol(struct transfer_request *request)
 		request->state = RUN_MKCOL;
 	} else {
 		request->state = ABORTED;
-		FREE_AND_NULL(request->url);
+		free(request->url);
+		request->url = NULL;
 	}
 }
 #endif
@@ -304,16 +303,16 @@ static void start_fetch_packed(struct transfer_request *request)
 	struct transfer_request *check_request = request_queue_head;
 	struct http_pack_request *preq;
 
-	target = find_sha1_pack(request->obj->oid.hash, repo->packs);
+	target = find_sha1_pack(request->obj->sha1, repo->packs);
 	if (!target) {
-		fprintf(stderr, "Unable to fetch %s, will not be able to update server info refs\n", oid_to_hex(&request->obj->oid));
+		fprintf(stderr, "Unable to fetch %s, will not be able to update server info refs\n", sha1_to_hex(request->obj->sha1));
 		repo->can_update_info_refs = 0;
 		release_request(request);
 		return;
 	}
 
 	fprintf(stderr,	"Fetching pack %s\n", sha1_to_hex(target->sha1));
-	fprintf(stderr, " which contains %s\n", oid_to_hex(&request->obj->oid));
+	fprintf(stderr, " which contains %s\n", sha1_to_hex(request->obj->sha1));
 
 	preq = new_http_pack_request(target, repo->url);
 	if (preq == NULL) {
@@ -350,7 +349,7 @@ static void start_fetch_packed(struct transfer_request *request)
 
 static void start_put(struct transfer_request *request)
 {
-	char *hex = oid_to_hex(&request->obj->oid);
+	char *hex = sha1_to_hex(request->obj->sha1);
 	struct active_request_slot *slot;
 	struct strbuf buf = STRBUF_INIT;
 	enum object_type type;
@@ -361,8 +360,8 @@ static void start_put(struct transfer_request *request)
 	ssize_t size;
 	git_zstream stream;
 
-	unpacked = read_sha1_file(request->obj->oid.hash, &type, &len);
-	hdrlen = xsnprintf(hdr, sizeof(hdr), "%s %lu", type_name(type), len) + 1;
+	unpacked = read_sha1_file(request->obj->sha1, &type, &len);
+	hdrlen = sprintf(hdr, "%s %lu", typename(type), len) + 1;
 
 	/* Set it up */
 	git_deflate_init(&stream, zlib_compression_level);
@@ -409,14 +408,15 @@ static void start_put(struct transfer_request *request)
 		request->state = RUN_PUT;
 	} else {
 		request->state = ABORTED;
-		FREE_AND_NULL(request->url);
+		free(request->url);
+		request->url = NULL;
 	}
 }
 
 static void start_move(struct transfer_request *request)
 {
 	struct active_request_slot *slot;
-	struct curl_slist *dav_headers = http_copy_default_headers();
+	struct curl_slist *dav_headers = NULL;
 
 	slot = get_active_slot();
 	slot->callback_func = process_response;
@@ -431,7 +431,8 @@ static void start_move(struct transfer_request *request)
 		request->state = RUN_MOVE;
 	} else {
 		request->state = ABORTED;
-		FREE_AND_NULL(request->url);
+		free(request->url);
+		request->url = NULL;
 	}
 }
 
@@ -524,17 +525,18 @@ static void finish_request(struct transfer_request *request)
 
 	/* URL is reused for MOVE after PUT */
 	if (request->state != RUN_PUT) {
-		FREE_AND_NULL(request->url);
+		free(request->url);
+		request->url = NULL;
 	}
 
 	if (request->state == RUN_MKCOL) {
 		if (request->curl_result == CURLE_OK ||
 		    request->http_code == 405) {
-			remote_dir_exists[request->obj->oid.hash[0]] = 1;
+			remote_dir_exists[request->obj->sha1[0]] = 1;
 			start_put(request);
 		} else {
 			fprintf(stderr, "MKCOL %s failed, aborting (%d/%ld)\n",
-				oid_to_hex(&request->obj->oid),
+				sha1_to_hex(request->obj->sha1),
 				request->curl_result, request->http_code);
 			request->state = ABORTED;
 			aborted = 1;
@@ -544,7 +546,7 @@ static void finish_request(struct transfer_request *request)
 			start_move(request);
 		} else {
 			fprintf(stderr,	"PUT %s failed, aborting (%d/%ld)\n",
-				oid_to_hex(&request->obj->oid),
+				sha1_to_hex(request->obj->sha1),
 				request->curl_result, request->http_code);
 			request->state = ABORTED;
 			aborted = 1;
@@ -553,12 +555,12 @@ static void finish_request(struct transfer_request *request)
 		if (request->curl_result == CURLE_OK) {
 			if (push_verbosely)
 				fprintf(stderr, "    sent %s\n",
-					oid_to_hex(&request->obj->oid));
+					sha1_to_hex(request->obj->sha1));
 			request->obj->flags |= REMOTE;
 			release_request(request);
 		} else {
 			fprintf(stderr, "MOVE %s failed, aborting (%d/%ld)\n",
-				oid_to_hex(&request->obj->oid),
+				sha1_to_hex(request->obj->sha1),
 				request->curl_result, request->http_code);
 			request->state = ABORTED;
 			aborted = 1;
@@ -611,7 +613,7 @@ static int fill_active_slot(void *unused)
 			start_fetch_loose(request);
 			return 1;
 		} else if (pushing && request->state == NEED_PUSH) {
-			if (remote_dir_exists[request->obj->oid.hash[0]] == 1) {
+			if (remote_dir_exists[request->obj->sha1[0]] == 1) {
 				start_put(request);
 			} else {
 				start_mkcol(request);
@@ -635,8 +637,8 @@ static void add_fetch_request(struct object *obj)
 	 * Don't fetch the object if it's known to exist locally
 	 * or is already in the request queue
 	 */
-	if (remote_dir_exists[obj->oid.hash[0]] == -1)
-		get_remote_object_list(obj->oid.hash[0]);
+	if (remote_dir_exists[obj->sha1[0]] == -1)
+		get_remote_object_list(obj->sha1[0]);
 	if (obj->flags & (LOCAL | FETCHING))
 		return;
 
@@ -668,11 +670,11 @@ static int add_send_request(struct object *obj, struct remote_lock *lock)
 	 * Don't push the object if it's known to exist on the remote
 	 * or is already in the request queue
 	 */
-	if (remote_dir_exists[obj->oid.hash[0]] == -1)
-		get_remote_object_list(obj->oid.hash[0]);
+	if (remote_dir_exists[obj->sha1[0]] == -1)
+		get_remote_object_list(obj->sha1[0]);
 	if (obj->flags & (REMOTE | PUSHING))
 		return 0;
-	target = find_sha1_pack(obj->oid.hash, repo->packs);
+	target = find_sha1_pack(obj->sha1, repo->packs);
 	if (target) {
 		obj->flags |= REMOTE;
 		return 0;
@@ -715,13 +717,13 @@ static int fetch_indices(void)
 	return ret;
 }
 
-static void one_remote_object(const struct object_id *oid)
+static void one_remote_object(const unsigned char *sha1)
 {
 	struct object *obj;
 
-	obj = lookup_object(oid->hash);
+	obj = lookup_object(sha1);
 	if (!obj)
-		obj = parse_object(oid);
+		obj = parse_object(sha1);
 
 	/* Ignore remote objects that don't exist locally */
 	if (!obj)
@@ -784,23 +786,24 @@ xml_start_tag(void *userData, const char *name, const char **atts)
 {
 	struct xml_ctx *ctx = (struct xml_ctx *)userData;
 	const char *c = strchr(name, ':');
-	int old_namelen, new_len;
+	int new_len;
 
 	if (c == NULL)
 		c = name;
 	else
 		c++;
 
-	old_namelen = strlen(ctx->name);
-	new_len = old_namelen + strlen(c) + 2;
+	new_len = strlen(ctx->name) + strlen(c) + 2;
 
 	if (new_len > ctx->len) {
 		ctx->name = xrealloc(ctx->name, new_len);
 		ctx->len = new_len;
 	}
-	xsnprintf(ctx->name + old_namelen, ctx->len - old_namelen, ".%s", c);
+	strcat(ctx->name, ".");
+	strcat(ctx->name, c);
 
-	FREE_AND_NULL(ctx->cdata);
+	free(ctx->cdata);
+	ctx->cdata = NULL;
 
 	ctx->userFunc(ctx, 0);
 }
@@ -841,7 +844,7 @@ static struct remote_lock *lock_remote(const char *path, long timeout)
 	char *ep;
 	char timeout_header[25];
 	struct remote_lock *lock = NULL;
-	struct curl_slist *dav_headers = http_copy_default_headers();
+	struct curl_slist *dav_headers = NULL;
 	struct xml_ctx ctx;
 	char *escaped;
 
@@ -878,7 +881,7 @@ static struct remote_lock *lock_remote(const char *path, long timeout)
 	strbuf_addf(&out_buffer.buf, LOCK_REQUEST, escaped);
 	free(escaped);
 
-	xsnprintf(timeout_header, sizeof(timeout_header), "Timeout: Second-%ld", timeout);
+	sprintf(timeout_header, "Timeout: Second-%ld", timeout);
 	dav_headers = curl_slist_append(dav_headers, timeout_header);
 	dav_headers = curl_slist_append(dav_headers, "Content-Type: text/xml");
 
@@ -915,10 +918,6 @@ static struct remote_lock *lock_remote(const char *path, long timeout)
 				lock->timeout = -1;
 			}
 			XML_ParserFree(parser);
-		} else {
-			fprintf(stderr,
-				"error: curl result=%d, HTTP code=%ld\n",
-				results.curl_result, results.http_code);
 		}
 	} else {
 		fprintf(stderr, "Unable to start LOCK request\n");
@@ -932,7 +931,8 @@ static struct remote_lock *lock_remote(const char *path, long timeout)
 		free(lock->token);
 		free(lock->owner);
 		free(url);
-		FREE_AND_NULL(lock);
+		free(lock);
+		lock = NULL;
 	} else {
 		lock->url = url;
 		lock->start_time = time(NULL);
@@ -1011,25 +1011,27 @@ static void remote_ls(const char *path, int flags,
 		      void (*userFunc)(struct remote_ls_ctx *ls),
 		      void *userData);
 
-/* extract hex from sharded "xx/x{38}" filename */
-static int get_oid_hex_from_objpath(const char *path, struct object_id *oid)
+/* extract hex from sharded "xx/x{40}" filename */
+static int get_sha1_hex_from_objpath(const char *path, unsigned char *sha1)
 {
-	if (strlen(path) != GIT_SHA1_HEXSZ + 1)
+	char hex[40];
+
+	if (strlen(path) != 41)
 		return -1;
 
-	if (hex_to_bytes(oid->hash, path, 1))
-		return -1;
+	memcpy(hex, path, 2);
 	path += 2;
 	path++; /* skip '/' */
+	memcpy(hex, path, 38);
 
-	return hex_to_bytes(oid->hash + 1, path, GIT_SHA1_RAWSZ - 1);
+	return get_sha1_hex(hex, sha1);
 }
 
 static void process_ls_object(struct remote_ls_ctx *ls)
 {
 	unsigned int *parent = (unsigned int *)ls->userData;
 	const char *path = ls->dentry_name;
-	struct object_id oid;
+	unsigned char sha1[20];
 
 	if (!strcmp(ls->path, ls->dentry_name) && (ls->flags & IS_DIR)) {
 		remote_dir_exists[*parent] = 1;
@@ -1037,10 +1039,10 @@ static void process_ls_object(struct remote_ls_ctx *ls)
 	}
 
 	if (!skip_prefix(path, "objects/", &path) ||
-	    get_oid_hex_from_objpath(path, &oid))
+	    get_sha1_hex_from_objpath(path, sha1))
 		return;
 
-	one_remote_object(&oid);
+	one_remote_object(sha1);
 }
 
 static void process_ls_ref(struct remote_ls_ctx *ls)
@@ -1102,7 +1104,8 @@ static void handle_remote_ls_ctx(struct xml_ctx *ctx, int tag_closed)
 			ls->dentry_flags |= IS_DIR;
 		}
 	} else if (!strcmp(ctx->name, DAV_PROPFIND_RESP)) {
-		FREE_AND_NULL(ls->dentry_name);
+		free(ls->dentry_name);
+		ls->dentry_name = NULL;
 		ls->dentry_flags = 0;
 	}
 }
@@ -1122,7 +1125,7 @@ static void remote_ls(const char *path, int flags,
 	struct slot_results results;
 	struct strbuf in_buffer = STRBUF_INIT;
 	struct buffer out_buffer = { STRBUF_INIT, 0 };
-	struct curl_slist *dav_headers = http_copy_default_headers();
+	struct curl_slist *dav_headers = NULL;
 	struct xml_ctx ctx;
 	struct remote_ls_ctx ls;
 
@@ -1133,7 +1136,7 @@ static void remote_ls(const char *path, int flags,
 	ls.userData = userData;
 	ls.userFunc = userFunc;
 
-	strbuf_addstr(&out_buffer.buf, PROPFIND_ALL_REQUEST);
+	strbuf_addf(&out_buffer.buf, PROPFIND_ALL_REQUEST);
 
 	dav_headers = curl_slist_append(dav_headers, "Depth: 1");
 	dav_headers = curl_slist_append(dav_headers, "Content-Type: text/xml");
@@ -1200,7 +1203,7 @@ static int locking_available(void)
 	struct slot_results results;
 	struct strbuf in_buffer = STRBUF_INIT;
 	struct buffer out_buffer = { STRBUF_INIT, 0 };
-	struct curl_slist *dav_headers = http_copy_default_headers();
+	struct curl_slist *dav_headers = NULL;
 	struct xml_ctx ctx;
 	int lock_flags = 0;
 	char *escaped;
@@ -1273,7 +1276,9 @@ static struct object_list **add_one_object(struct object *obj, struct object_lis
 }
 
 static struct object_list **process_blob(struct blob *blob,
-					 struct object_list **p)
+					 struct object_list **p,
+					 struct name_path *path,
+					 const char *name)
 {
 	struct object *obj = &blob->object;
 
@@ -1287,31 +1292,38 @@ static struct object_list **process_blob(struct blob *blob,
 }
 
 static struct object_list **process_tree(struct tree *tree,
-					 struct object_list **p)
+					 struct object_list **p,
+					 struct name_path *path,
+					 const char *name)
 {
 	struct object *obj = &tree->object;
 	struct tree_desc desc;
 	struct name_entry entry;
+	struct name_path me;
 
 	obj->flags |= LOCAL;
 
 	if (obj->flags & (UNINTERESTING | SEEN))
 		return p;
 	if (parse_tree(tree) < 0)
-		die("bad tree object %s", oid_to_hex(&obj->oid));
+		die("bad tree object %s", sha1_to_hex(obj->sha1));
 
 	obj->flags |= SEEN;
+	name = xstrdup(name);
 	p = add_one_object(obj, p);
+	me.up = path;
+	me.elem = name;
+	me.elem_len = strlen(name);
 
 	init_tree_desc(&desc, tree->buffer, tree->size);
 
 	while (tree_entry(&desc, &entry))
 		switch (object_type(entry.mode)) {
 		case OBJ_TREE:
-			p = process_tree(lookup_tree(entry.oid), p);
+			p = process_tree(lookup_tree(entry.sha1), p, &me, name);
 			break;
 		case OBJ_BLOB:
-			p = process_blob(lookup_blob(entry.oid), p);
+			p = process_blob(lookup_blob(entry.sha1), p, &me, name);
 			break;
 		default:
 			/* Subproject commit - not in this repository */
@@ -1330,7 +1342,7 @@ static int get_delta(struct rev_info *revs, struct remote_lock *lock)
 	int count = 0;
 
 	while ((commit = get_revision(revs)) != NULL) {
-		p = process_tree(commit->tree, p);
+		p = process_tree(commit->tree, p, NULL, "");
 		commit->object.flags |= LOCAL;
 		if (!(commit->object.flags & UNINTERESTING))
 			count += add_send_request(&commit->object, lock);
@@ -1349,14 +1361,14 @@ static int get_delta(struct rev_info *revs, struct remote_lock *lock)
 			continue;
 		}
 		if (obj->type == OBJ_TREE) {
-			p = process_tree((struct tree *)obj, p);
+			p = process_tree((struct tree *)obj, p, NULL, name);
 			continue;
 		}
 		if (obj->type == OBJ_BLOB) {
-			p = process_blob((struct blob *)obj, p);
+			p = process_blob((struct blob *)obj, p, NULL, name);
 			continue;
 		}
-		die("unknown pending object %s (%s)", oid_to_hex(&obj->oid), name);
+		die("unknown pending object %s (%s)", sha1_to_hex(obj->sha1), name);
 	}
 
 	while (objects) {
@@ -1425,11 +1437,13 @@ static void one_remote_ref(const char *refname)
 	 * Fetch a copy of the object if it doesn't exist locally - it
 	 * may be required for updating server info later.
 	 */
-	if (repo->can_update_info_refs && !has_object_file(&ref->old_oid)) {
-		obj = lookup_unknown_object(ref->old_oid.hash);
-		fprintf(stderr,	"  fetch %s for %s\n",
-			oid_to_hex(&ref->old_oid), refname);
-		add_fetch_request(obj);
+	if (repo->can_update_info_refs && !has_sha1_file(ref->old_sha1)) {
+		obj = lookup_unknown_object(ref->old_sha1);
+		if (obj) {
+			fprintf(stderr,	"  fetch %s for %s\n",
+				sha1_to_hex(ref->old_sha1), refname);
+			add_fetch_request(obj);
+		}
 	}
 
 	ref->next = remote_refs;
@@ -1445,6 +1459,8 @@ static void add_remote_info_ref(struct remote_ls_ctx *ls)
 {
 	struct strbuf *buf = (struct strbuf *)ls->userData;
 	struct object *o;
+	int len;
+	char *ref_info;
 	struct ref *ref;
 
 	ref = alloc_ref(ls->dentry_name);
@@ -1458,24 +1474,33 @@ static void add_remote_info_ref(struct remote_ls_ctx *ls)
 		return;
 	}
 
-	o = parse_object(&ref->old_oid);
+	o = parse_object(ref->old_sha1);
 	if (!o) {
 		fprintf(stderr,
 			"Unable to parse object %s for remote ref %s\n",
-			oid_to_hex(&ref->old_oid), ls->dentry_name);
+			sha1_to_hex(ref->old_sha1), ls->dentry_name);
 		aborted = 1;
 		free(ref);
 		return;
 	}
 
-	strbuf_addf(buf, "%s\t%s\n",
-		    oid_to_hex(&ref->old_oid), ls->dentry_name);
+	len = strlen(ls->dentry_name) + 42;
+	ref_info = xcalloc(len + 1, 1);
+	sprintf(ref_info, "%s	%s\n",
+		sha1_to_hex(ref->old_sha1), ls->dentry_name);
+	fwrite_buffer(ref_info, 1, len, buf);
+	free(ref_info);
 
 	if (o->type == OBJ_TAG) {
 		o = deref_tag(o, ls->dentry_name, 0);
-		if (o)
-			strbuf_addf(buf, "%s\t%s^{}\n",
-				    oid_to_hex(&o->oid), ls->dentry_name);
+		if (o) {
+			len = strlen(ls->dentry_name) + 45;
+			ref_info = xcalloc(len + 1, 1);
+			sprintf(ref_info, "%s	%s^{}\n",
+				sha1_to_hex(o->sha1), ls->dentry_name);
+			fwrite_buffer(ref_info, 1, len, buf);
+			free(ref_info);
+		}
 	}
 	free(ref);
 }
@@ -1525,7 +1550,6 @@ static int remote_exists(const char *path)
 		break;
 	case HTTP_ERROR:
 		error("unable to access '%s': %s", url, curl_errorstr);
-		/* fallthrough */
 	default:
 		ret = -1;
 	}
@@ -1533,7 +1557,7 @@ static int remote_exists(const char *path)
 	return ret;
 }
 
-static void fetch_symref(const char *path, char **symref, struct object_id *oid)
+static void fetch_symref(const char *path, char **symref, unsigned char *sha1)
 {
 	char *url = xstrfmt("%s%s", repo->url, path);
 	struct strbuf buffer = STRBUF_INIT;
@@ -1544,8 +1568,9 @@ static void fetch_symref(const char *path, char **symref, struct object_id *oid)
 		    curl_errorstr);
 	free(url);
 
-	FREE_AND_NULL(*symref);
-	oidclr(oid);
+	free(*symref);
+	*symref = NULL;
+	hashclr(sha1);
 
 	if (buffer.len == 0)
 		return;
@@ -1557,17 +1582,16 @@ static void fetch_symref(const char *path, char **symref, struct object_id *oid)
 	if (skip_prefix(buffer.buf, "ref: ", &name)) {
 		*symref = xmemdupz(name, buffer.len - (name - buffer.buf));
 	} else {
-		get_oid_hex(buffer.buf, oid);
+		get_sha1_hex(buffer.buf, sha1);
 	}
 
 	strbuf_release(&buffer);
 }
 
-static int verify_merge_base(struct object_id *head_oid, struct ref *remote)
+static int verify_merge_base(unsigned char *head_sha1, struct ref *remote)
 {
-	struct commit *head = lookup_commit_or_die(head_oid, "HEAD");
-	struct commit *branch = lookup_commit_or_die(&remote->old_oid,
-						     remote->name);
+	struct commit *head = lookup_commit_or_die(head_sha1, "HEAD");
+	struct commit *branch = lookup_commit_or_die(remote->old_sha1, remote->name);
 
 	return in_merge_bases(branch, head);
 }
@@ -1576,7 +1600,7 @@ static int delete_remote_branch(const char *pattern, int force)
 {
 	struct ref *refs = remote_refs;
 	struct ref *remote_ref = NULL;
-	struct object_id head_oid;
+	unsigned char head_sha1[20];
 	char *symref = NULL;
 	int match;
 	int patlen = strlen(pattern);
@@ -1607,7 +1631,7 @@ static int delete_remote_branch(const char *pattern, int force)
 	 * Remote HEAD must be a symref (not exactly foolproof; a remote
 	 * symlink to a symref will look like a symref)
 	 */
-	fetch_symref("HEAD", &symref, &head_oid);
+	fetch_symref("HEAD", &symref, head_sha1);
 	if (!symref)
 		return error("Remote HEAD is not a symref");
 
@@ -1616,7 +1640,7 @@ static int delete_remote_branch(const char *pattern, int force)
 		if (!strcmp(remote_ref->name, symref))
 			return error("Remote branch %s is the current HEAD",
 				     remote_ref->name);
-		fetch_symref(symref, &symref, &head_oid);
+		fetch_symref(symref, &symref, head_sha1);
 	}
 
 	/* Run extra sanity checks if delete is not forced */
@@ -1624,20 +1648,20 @@ static int delete_remote_branch(const char *pattern, int force)
 		/* Remote HEAD must resolve to a known object */
 		if (symref)
 			return error("Remote HEAD symrefs too deep");
-		if (is_null_oid(&head_oid))
+		if (is_null_sha1(head_sha1))
 			return error("Unable to resolve remote HEAD");
-		if (!has_object_file(&head_oid))
-			return error("Remote HEAD resolves to object %s\nwhich does not exist locally, perhaps you need to fetch?", oid_to_hex(&head_oid));
+		if (!has_sha1_file(head_sha1))
+			return error("Remote HEAD resolves to object %s\nwhich does not exist locally, perhaps you need to fetch?", sha1_to_hex(head_sha1));
 
 		/* Remote branch must resolve to a known object */
-		if (is_null_oid(&remote_ref->old_oid))
+		if (is_null_sha1(remote_ref->old_sha1))
 			return error("Unable to resolve remote branch %s",
 				     remote_ref->name);
-		if (!has_object_file(&remote_ref->old_oid))
-			return error("Remote branch %s resolves to object %s\nwhich does not exist locally, perhaps you need to fetch?", remote_ref->name, oid_to_hex(&remote_ref->old_oid));
+		if (!has_sha1_file(remote_ref->old_sha1))
+			return error("Remote branch %s resolves to object %s\nwhich does not exist locally, perhaps you need to fetch?", remote_ref->name, sha1_to_hex(remote_ref->old_sha1));
 
 		/* Remote branch must be an ancestor of remote HEAD */
-		if (!verify_merge_base(&head_oid, remote_ref)) {
+		if (!verify_merge_base(head_sha1, remote_ref)) {
 			return error("The branch '%s' is not an ancestor "
 				     "of your current HEAD.\n"
 				     "If you are sure you want to delete it,"
@@ -1687,12 +1711,12 @@ static void run_request_queue(void)
 #endif
 }
 
-int cmd_main(int argc, const char **argv)
+int main(int argc, char **argv)
 {
 	struct transfer_request *request;
 	struct transfer_request *next_request;
 	int nr_refspec = 0;
-	const char **refspec = NULL;
+	char **refspec = NULL;
 	struct remote_lock *ref_lock = NULL;
 	struct remote_lock *info_ref_lock = NULL;
 	struct rev_info revs;
@@ -1704,11 +1728,15 @@ int cmd_main(int argc, const char **argv)
 	int new_refs;
 	struct ref *ref, *local_refs;
 
+	git_setup_gettext();
+
+	git_extract_argv0_path(argv[0]);
+
 	repo = xcalloc(1, sizeof(*repo));
 
 	argv++;
 	for (i = 1; i < argc; i++, argv++) {
-		const char *arg = *argv;
+		char *arg = *argv;
 
 		if (*arg == '-') {
 			if (!strcmp(arg, "--all")) {
@@ -1838,12 +1866,15 @@ int cmd_main(int argc, const char **argv)
 
 	new_refs = 0;
 	for (ref = remote_refs; ref; ref = ref->next) {
-		struct argv_array commit_argv = ARGV_ARRAY_INIT;
+		char old_hex[60], *new_hex;
+		const char *commit_argv[5];
+		int commit_argc;
+		char *new_sha1_hex, *old_sha1_hex;
 
 		if (!ref->peer_ref)
 			continue;
 
-		if (is_null_oid(&ref->peer_ref->new_oid)) {
+		if (is_null_sha1(ref->peer_ref->new_sha1)) {
 			if (delete_remote_branch(ref->name, 1) == -1) {
 				error("Could not remove %s", ref->name);
 				if (helper_status)
@@ -1856,7 +1887,7 @@ int cmd_main(int argc, const char **argv)
 			continue;
 		}
 
-		if (!oidcmp(&ref->old_oid, &ref->peer_ref->new_oid)) {
+		if (!hashcmp(ref->old_sha1, ref->peer_ref->new_sha1)) {
 			if (push_verbosely)
 				fprintf(stderr, "'%s': up-to-date\n", ref->name);
 			if (helper_status)
@@ -1865,11 +1896,11 @@ int cmd_main(int argc, const char **argv)
 		}
 
 		if (!force_all &&
-		    !is_null_oid(&ref->old_oid) &&
+		    !is_null_sha1(ref->old_sha1) &&
 		    !ref->force) {
-			if (!has_object_file(&ref->old_oid) ||
-			    !ref_newer(&ref->peer_ref->new_oid,
-				       &ref->old_oid)) {
+			if (!has_sha1_file(ref->old_sha1) ||
+			    !ref_newer(ref->peer_ref->new_sha1,
+				       ref->old_sha1)) {
 				/*
 				 * We do not have the remote ref, or
 				 * we know that the remote ref is not
@@ -1890,14 +1921,15 @@ int cmd_main(int argc, const char **argv)
 				continue;
 			}
 		}
-		oidcpy(&ref->new_oid, &ref->peer_ref->new_oid);
+		hashcpy(ref->new_sha1, ref->peer_ref->new_sha1);
 		new_refs++;
+		strcpy(old_hex, sha1_to_hex(ref->old_sha1));
+		new_hex = sha1_to_hex(ref->new_sha1);
 
 		fprintf(stderr, "updating '%s'", ref->name);
 		if (strcmp(ref->name, ref->peer_ref->name))
 			fprintf(stderr, " using '%s'", ref->peer_ref->name);
-		fprintf(stderr, "\n  from %s\n  to   %s\n",
-			oid_to_hex(&ref->old_oid), oid_to_hex(&ref->new_oid));
+		fprintf(stderr, "\n  from %s\n  to   %s\n", old_hex, new_hex);
 		if (dry_run) {
 			if (helper_status)
 				printf("ok %s\n", ref->name);
@@ -1916,15 +1948,27 @@ int cmd_main(int argc, const char **argv)
 		}
 
 		/* Set up revision info for this refspec */
-		argv_array_push(&commit_argv, ""); /* ignored */
-		argv_array_push(&commit_argv, "--objects");
-		argv_array_push(&commit_argv, oid_to_hex(&ref->new_oid));
-		if (!push_all && !is_null_oid(&ref->old_oid))
-			argv_array_pushf(&commit_argv, "^%s",
-					 oid_to_hex(&ref->old_oid));
+		commit_argc = 3;
+		new_sha1_hex = xstrdup(sha1_to_hex(ref->new_sha1));
+		old_sha1_hex = NULL;
+		commit_argv[1] = "--objects";
+		commit_argv[2] = new_sha1_hex;
+		if (!push_all && !is_null_sha1(ref->old_sha1)) {
+			old_sha1_hex = xmalloc(42);
+			sprintf(old_sha1_hex, "^%s",
+				sha1_to_hex(ref->old_sha1));
+			commit_argv[3] = old_sha1_hex;
+			commit_argc++;
+		}
+		commit_argv[commit_argc] = NULL;
 		init_revisions(&revs, setup_git_directory());
-		setup_revisions(commit_argv.argc, commit_argv.argv, &revs, NULL);
+		setup_revisions(commit_argc, commit_argv, &revs, NULL);
 		revs.edge_hint = 0; /* just in case */
+		free(new_sha1_hex);
+		if (old_sha1_hex) {
+			free(old_sha1_hex);
+			commit_argv[1] = NULL;
+		}
 
 		/* Generate a list of objects that need to be pushed */
 		pushing = 0;
@@ -1944,7 +1988,7 @@ int cmd_main(int argc, const char **argv)
 		run_request_queue();
 
 		/* Update the remote branch if all went well */
-		if (aborted || !update_remote(ref->new_oid.hash, ref_lock))
+		if (aborted || !update_remote(ref->new_sha1, ref_lock))
 			rc = 1;
 
 		if (!rc)
@@ -1953,7 +1997,6 @@ int cmd_main(int argc, const char **argv)
 			printf("%s %s\n", !rc ? "ok" : "error", ref->name);
 		unlock_remote(ref_lock);
 		check_locks();
-		argv_array_clear(&commit_argv);
 	}
 
 	/* Update remote server info if appropriate */

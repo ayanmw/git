@@ -27,8 +27,7 @@ continue_merge () {
 	cmt=$(cat "$state_dir/current")
 	if ! git diff-index --quiet --ignore-submodules HEAD --
 	then
-		if ! git commit ${gpg_sign_opt:+"$gpg_sign_opt"} $allow_empty_message \
-			--no-verify -C "$cmt"
+		if ! git commit ${gpg_sign_opt:+"$gpg_sign_opt"} --no-verify -C "$cmt"
 		then
 			echo "Commit failed, please do not call \"git commit\""
 			echo "directly, but instead do one of the following: "
@@ -58,7 +57,6 @@ call_merge () {
 	echo "$msgnum" >"$state_dir/msgnum"
 	cmt="$(cat "$state_dir/cmt.$msgnum")"
 	echo "$cmt" > "$state_dir/current"
-	git update-ref REBASE_HEAD "$cmt"
 	hd=$(git rev-parse --verify HEAD)
 	cmt_name=$(git symbolic-ref HEAD 2> /dev/null || echo HEAD)
 	eval GITHEAD_$cmt='"${cmt_name##refs/heads/}~$(($end - $msgnum))"'
@@ -69,9 +67,7 @@ call_merge () {
 		GIT_MERGE_VERBOSITY=1 && export GIT_MERGE_VERBOSITY
 	fi
 	test -z "$strategy" && strategy=recursive
-	# If cmt doesn't have a parent, don't include it as a base
-	base=$(git rev-parse --verify --quiet $cmt^)
-	eval 'git-merge-$strategy' $strategy_opts $base ' -- "$hd" "$cmt"'
+	eval 'git-merge-$strategy' $strategy_opts '"$cmt^" -- "$hd" "$cmt"'
 	rv=$?
 	case "$rv" in
 	0)
@@ -98,8 +94,10 @@ finish_rb_merge () {
 	if test -s "$state_dir"/rewritten
 	then
 		git notes copy --for-rewrite=rebase <"$state_dir"/rewritten
-		hook="$(git rev-parse --git-path hooks/post-rewrite)"
-		test -x "$hook" && "$hook" rebase <"$state_dir"/rewritten
+		if test -x "$GIT_DIR"/hooks/post-rewrite
+		then
+			"$GIT_DIR"/hooks/post-rewrite rebase <"$state_dir"/rewritten
+		fi
 	fi
 	say All done.
 }
@@ -109,8 +107,8 @@ finish_rb_merge () {
 # below were not inside any function, and expected to return
 # to the function that dot-sourced us.
 #
-# However, older (9.x) versions of FreeBSD /bin/sh misbehave on such a
-# construct and continue to run the statements that follow such a "return".
+# However, FreeBSD /bin/sh misbehaves on such a construct and
+# continues to run the statements that follow such a "return".
 # As a work-around, we introduce an extra layer of a function
 # here, and immediately call it after defining it.
 git_rebase__merge () {
@@ -139,15 +137,11 @@ skip)
 	finish_rb_merge
 	return
 	;;
-show-current-patch)
-	exec git show REBASE_HEAD --
-	;;
 esac
 
 mkdir -p "$state_dir"
 echo "$onto_name" > "$state_dir/onto_name"
 write_basic_state
-rm -f "$(git rev-parse --git-path REBASE_HEAD)"
 
 msgnum=0
 for cmt in $(git rev-list --reverse --no-merges "$revisions")

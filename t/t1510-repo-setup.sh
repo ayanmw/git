@@ -39,10 +39,6 @@ A few rules for repo setup:
 11. When user's cwd is outside worktree, cwd remains unchanged,
     prefix is NULL.
 "
-
-# This test heavily relies on the standard error of nested function calls.
-test_untraceable=UnfortunatelyYes
-
 . ./test-lib.sh
 
 here=$(pwd)
@@ -110,7 +106,6 @@ setup_env () {
 expect () {
 	cat >"$1/expected" <<-EOF
 	setup: git_dir: $2
-	setup: git_common_dir: $2
 	setup: worktree: $3
 	setup: cwd: $4
 	setup: prefix: $5
@@ -603,18 +598,9 @@ test_expect_success '#20b/c: core.worktree and core.bare conflict' '
 	mkdir -p 20b/.git/wt/sub &&
 	(
 		cd 20b/.git &&
-		test_must_fail git status >/dev/null
+		test_must_fail git symbolic-ref HEAD >/dev/null
 	) 2>message &&
 	grep "core.bare and core.worktree" message
-'
-
-test_expect_success '#20d: core.worktree and core.bare OK when working tree not needed' '
-	setup_repo 20d non-existent "" true &&
-	mkdir -p 20d/.git/wt/sub &&
-	(
-		cd 20d/.git &&
-		git config foo.bar value
-	)
 '
 
 # Case #21: core.worktree/GIT_WORK_TREE overrides core.bare' '
@@ -625,7 +611,7 @@ test_expect_success '#21: setup, core.worktree warns before overriding core.bare
 		cd 21/.git &&
 		GIT_WORK_TREE="$here/21" &&
 		export GIT_WORK_TREE &&
-		git status >/dev/null
+		git symbolic-ref HEAD >/dev/null
 	) 2>message &&
 	! test -s message
 
@@ -714,13 +700,13 @@ test_expect_success '#22.2: core.worktree and core.bare conflict' '
 		cd 22/.git &&
 		GIT_DIR=. &&
 		export GIT_DIR &&
-		test_must_fail git status 2>result
+		test_must_fail git symbolic-ref HEAD 2>result
 	) &&
 	(
 		cd 22 &&
 		GIT_DIR=.git &&
 		export GIT_DIR &&
-		test_must_fail git status 2>result
+		test_must_fail git symbolic-ref HEAD 2>result
 	) &&
 	grep "core.bare and core.worktree" 22/.git/result &&
 	grep "core.bare and core.worktree" 22/result
@@ -766,8 +752,9 @@ test_expect_success '#28: core.worktree and core.bare conflict (gitfile case)' '
 	setup_repo 28 "$here/28" gitfile true &&
 	(
 		cd 28 &&
-		test_must_fail git status
+		test_must_fail git symbolic-ref HEAD
 	) 2>message &&
+	! grep "^warning:" message &&
 	grep "core.bare and core.worktree" message
 '
 
@@ -779,7 +766,7 @@ test_expect_success '#29: setup' '
 		cd 29 &&
 		GIT_WORK_TREE="$here/29" &&
 		export GIT_WORK_TREE &&
-		git status
+		git symbolic-ref HEAD >/dev/null
 	) 2>message &&
 	! test -s message
 '
@@ -790,7 +777,7 @@ test_expect_success '#30: core.worktree and core.bare conflict (gitfile version)
 	setup_repo 30 "$here/30" gitfile true &&
 	(
 		cd 30 &&
-		test_must_fail env GIT_DIR=.git git status 2>result
+		test_must_fail env GIT_DIR=.git git symbolic-ref HEAD 2>result
 	) &&
 	grep "core.bare and core.worktree" 30/result
 '

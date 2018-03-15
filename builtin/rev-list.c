@@ -1,21 +1,14 @@
 #include "cache.h"
-#include "config.h"
 #include "commit.h"
 #include "diff.h"
 #include "revision.h"
 #include "list-objects.h"
-#include "list-objects-filter.h"
-#include "list-objects-filter-options.h"
 #include "pack.h"
 #include "pack-bitmap.h"
 #include "builtin.h"
 #include "log-tree.h"
 #include "graph.h"
 #include "bisect.h"
-#include "progress.h"
-#include "reflog-walk.h"
-#include "oidset.h"
-#include "packfile.h"
 
 static const char rev_list_usage[] =
 "git rev-list [OPTION] <commit-id>... [ -- paths... ]\n"
@@ -49,38 +42,17 @@ static const char rev_list_usage[] =
 "    --abbrev=<n> | --no-abbrev\n"
 "    --abbrev-commit\n"
 "    --left-right\n"
-"    --count\n"
 "  special purpose:\n"
 "    --bisect\n"
 "    --bisect-vars\n"
 "    --bisect-all"
 ;
 
-static struct progress *progress;
-static unsigned progress_counter;
-
-static struct list_objects_filter_options filter_options;
-static struct oidset omitted_objects;
-static int arg_print_omitted; /* print objects omitted by filter */
-
-static struct oidset missing_objects;
-enum missing_action {
-	MA_ERROR = 0,    /* fail if any missing objects are encountered */
-	MA_ALLOW_ANY,    /* silently allow ALL missing objects */
-	MA_PRINT,        /* print ALL missing objects in special section */
-	MA_ALLOW_PROMISOR, /* silently allow all missing PROMISOR objects */
-};
-static enum missing_action arg_missing_action;
-
-#define DEFAULT_OIDSET_SIZE     (16*1024)
-
 static void finish_commit(struct commit *commit, void *data);
 static void show_commit(struct commit *commit, void *data)
 {
 	struct rev_list_info *info = data;
 	struct rev_info *revs = info->revs;
-
-	display_progress(progress, ++progress_counter);
 
 	if (info->flags & REV_LIST_QUIET) {
 		finish_commit(commit, data);
@@ -101,21 +73,21 @@ static void show_commit(struct commit *commit, void *data)
 	}
 
 	if (info->show_timestamp)
-		printf("%"PRItime" ", commit->date);
+		printf("%lu ", commit->date);
 	if (info->header_prefix)
 		fputs(info->header_prefix, stdout);
 
 	if (!revs->graph)
 		fputs(get_revision_mark(revs, commit), stdout);
 	if (revs->abbrev_commit && revs->abbrev)
-		fputs(find_unique_abbrev(commit->object.oid.hash, revs->abbrev),
+		fputs(find_unique_abbrev(commit->object.sha1, revs->abbrev),
 		      stdout);
 	else
-		fputs(oid_to_hex(&commit->object.oid), stdout);
+		fputs(sha1_to_hex(commit->object.sha1), stdout);
 	if (revs->print_parents) {
 		struct commit_list *parents = commit->parents;
 		while (parents) {
-			printf(" %s", oid_to_hex(&parents->item->object.oid));
+			printf(" %s", sha1_to_hex(parents->item->object.sha1));
 			parents = parents->next;
 		}
 	}
@@ -124,7 +96,7 @@ static void show_commit(struct commit *commit, void *data)
 
 		children = lookup_decoration(&revs->children, &commit->object);
 		while (children) {
-			printf(" %s", oid_to_hex(&children->item->object.oid));
+			printf(" %s", sha1_to_hex(children->item->object.sha1));
 			children = children->next;
 		}
 	}
@@ -134,7 +106,7 @@ static void show_commit(struct commit *commit, void *data)
 	else
 		putchar('\n');
 
-	if (revs->verbose_header) {
+	if (revs->verbose_header && get_cached_commit_buffer(commit, NULL)) {
 		struct strbuf buf = STRBUF_INIT;
 		struct pretty_print_context ctx = {0};
 		ctx.abbrev = revs->abbrev;
@@ -142,42 +114,49 @@ static void show_commit(struct commit *commit, void *data)
 		ctx.date_mode_explicit = revs->date_mode_explicit;
 		ctx.fmt = revs->commit_format;
 		ctx.output_encoding = get_log_output_encoding();
-		ctx.color = revs->diffopt.use_color;
 		pretty_print_commit(&ctx, commit, &buf);
-		if (buf.len) {
-			if (revs->commit_format != CMIT_FMT_ONELINE)
-				graph_show_oneline(revs->graph);
+		if (revs->graph) {
+			if (buf.len) {
+				if (revs->commit_format != CMIT_FMT_ONELINE)
+					graph_show_oneline(revs->graph);
 
-			graph_show_commit_msg(revs->graph, stdout, &buf);
+				graph_show_commit_msg(revs->graph, &buf);
 
-			/*
-			 * Add a newline after the commit message.
-			 *
-			 * Usually, this newline produces a blank
-			 * padding line between entries, in which case
-			 * we need to add graph padding on this line.
-			 *
-			 * However, the commit message may not end in a
-			 * newline.  In this case the newline simply
-			 * ends the last line of the commit message,
-			 * and we don't need any graph output.  (This
-			 * always happens with CMIT_FMT_ONELINE, and it
-			 * happens with CMIT_FMT_USERFORMAT when the
-			 * format doesn't explicitly end in a newline.)
-			 */
-			if (buf.len && buf.buf[buf.len - 1] == '\n')
-				graph_show_padding(revs->graph);
-			putchar(info->hdr_termination);
+				/*
+				 * Add a newline after the commit message.
+				 *
+				 * Usually, this newline produces a blank
+				 * padding line between entries, in which case
+				 * we need to add graph padding on this line.
+				 *
+				 * However, the commit message may not end in a
+				 * newline.  In this case the newline simply
+				 * ends the last line of the commit message,
+				 * and we don't need any graph output.  (This
+				 * always happens with CMIT_FMT_ONELINE, and it
+				 * happens with CMIT_FMT_USERFORMAT when the
+				 * format doesn't explicitly end in a newline.)
+				 */
+				if (buf.len && buf.buf[buf.len - 1] == '\n')
+					graph_show_padding(revs->graph);
+				putchar('\n');
+			} else {
+				/*
+				 * If the message buffer is empty, just show
+				 * the rest of the graph output for this
+				 * commit.
+				 */
+				if (graph_show_remainder(revs->graph))
+					putchar('\n');
+				if (revs->commit_format == CMIT_FMT_ONELINE)
+					putchar('\n');
+			}
 		} else {
-			/*
-			 * If the message buffer is empty, just show
-			 * the rest of the graph output for this
-			 * commit.
-			 */
-			if (graph_show_remainder(revs->graph))
-				putchar('\n');
-			if (revs->commit_format == CMIT_FMT_ONELINE)
-				putchar('\n');
+			if (revs->commit_format != CMIT_FMT_USERFORMAT ||
+			    buf.len) {
+				fwrite(buf.buf, 1, buf.len, stdout);
+				putchar(info->hdr_termination);
+			}
 		}
 		strbuf_release(&buf);
 	} else {
@@ -197,65 +176,31 @@ static void finish_commit(struct commit *commit, void *data)
 	free_commit_buffer(commit);
 }
 
-static inline void finish_object__ma(struct object *obj)
-{
-	/*
-	 * Whether or not we try to dynamically fetch missing objects
-	 * from the server, we currently DO NOT have the object.  We
-	 * can either print, allow (ignore), or conditionally allow
-	 * (ignore) them.
-	 */
-	switch (arg_missing_action) {
-	case MA_ERROR:
-		die("missing blob object '%s'", oid_to_hex(&obj->oid));
-		return;
-
-	case MA_ALLOW_ANY:
-		return;
-
-	case MA_PRINT:
-		oidset_insert(&missing_objects, &obj->oid);
-		return;
-
-	case MA_ALLOW_PROMISOR:
-		if (is_promisor_object(&obj->oid))
-			return;
-		die("unexpected missing blob object '%s'",
-		    oid_to_hex(&obj->oid));
-		return;
-
-	default:
-		BUG("unhandled missing_action");
-		return;
-	}
-}
-
-static int finish_object(struct object *obj, const char *name, void *cb_data)
+static void finish_object(struct object *obj,
+			  const struct name_path *path, const char *name,
+			  void *cb_data)
 {
 	struct rev_list_info *info = cb_data;
-	if (obj->type == OBJ_BLOB && !has_object_file(&obj->oid)) {
-		finish_object__ma(obj);
-		return 1;
-	}
+	if (obj->type == OBJ_BLOB && !has_sha1_file(obj->sha1))
+		die("missing blob object '%s'", sha1_to_hex(obj->sha1));
 	if (info->revs->verify_objects && !obj->parsed && obj->type != OBJ_COMMIT)
-		parse_object(&obj->oid);
-	return 0;
+		parse_object(obj->sha1);
 }
 
-static void show_object(struct object *obj, const char *name, void *cb_data)
+static void show_object(struct object *obj,
+			const struct name_path *path, const char *component,
+			void *cb_data)
 {
 	struct rev_list_info *info = cb_data;
-	if (finish_object(obj, name, cb_data))
-		return;
-	display_progress(progress, ++progress_counter);
+	finish_object(obj, path, component, cb_data);
 	if (info->flags & REV_LIST_QUIET)
 		return;
-	show_object_with_name(stdout, obj, name);
+	show_object_with_name(stdout, obj, path, component);
 }
 
 static void show_edge(struct commit *commit)
 {
-	printf("-%s\n", oid_to_hex(&commit->object.oid));
+	printf("-%s\n", sha1_to_hex(commit->object.sha1));
 }
 
 static void print_var_str(const char *var, const char *val)
@@ -271,7 +216,7 @@ static void print_var_int(const char *var, int val)
 static int show_bisect_vars(struct rev_list_info *info, int reaches, int all)
 {
 	int cnt, flags = info->flags;
-	char hex[GIT_MAX_HEXSZ + 1] = "";
+	char hex[41] = "";
 	struct commit_list *tried;
 	struct rev_info *revs = info->revs;
 
@@ -296,7 +241,7 @@ static int show_bisect_vars(struct rev_list_info *info, int reaches, int all)
 		cnt = reaches;
 
 	if (revs->commits)
-		oid_to_hex_r(hex, &revs->commits->item->object.oid);
+		strcpy(hex, sha1_to_hex(revs->commits->item->object.sha1));
 
 	if (flags & BISECT_SHOW_ALL) {
 		traverse_commit_list(revs, show_commit, show_object, info);
@@ -314,43 +259,15 @@ static int show_bisect_vars(struct rev_list_info *info, int reaches, int all)
 }
 
 static int show_object_fast(
-	const struct object_id *oid,
+	const unsigned char *sha1,
 	enum object_type type,
 	int exclude,
 	uint32_t name_hash,
 	struct packed_git *found_pack,
 	off_t found_offset)
 {
-	fprintf(stdout, "%s\n", oid_to_hex(oid));
+	fprintf(stdout, "%s\n", sha1_to_hex(sha1));
 	return 1;
-}
-
-static inline int parse_missing_action_value(const char *value)
-{
-	if (!strcmp(value, "error")) {
-		arg_missing_action = MA_ERROR;
-		return 1;
-	}
-
-	if (!strcmp(value, "allow-any")) {
-		arg_missing_action = MA_ALLOW_ANY;
-		fetch_if_missing = 0;
-		return 1;
-	}
-
-	if (!strcmp(value, "print")) {
-		arg_missing_action = MA_PRINT;
-		fetch_if_missing = 0;
-		return 1;
-	}
-
-	if (!strcmp(value, "allow-promisor")) {
-		arg_missing_action = MA_ALLOW_PROMISOR;
-		fetch_if_missing = 0;
-		return 1;
-	}
-
-	return 0;
 }
 
 int cmd_rev_list(int argc, const char **argv, const char *prefix)
@@ -362,44 +279,11 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 	int bisect_show_vars = 0;
 	int bisect_find_all = 0;
 	int use_bitmap_index = 0;
-	const char *show_progress = NULL;
-
-	if (argc == 2 && !strcmp(argv[1], "-h"))
-		usage(rev_list_usage);
 
 	git_config(git_default_config, NULL);
 	init_revisions(&revs, prefix);
 	revs.abbrev = DEFAULT_ABBREV;
 	revs.commit_format = CMIT_FMT_UNSPECIFIED;
-
-	/*
-	 * Scan the argument list before invoking setup_revisions(), so that we
-	 * know if fetch_if_missing needs to be set to 0.
-	 *
-	 * "--exclude-promisor-objects" acts as a pre-filter on missing objects
-	 * by not crossing the boundary from realized objects to promisor
-	 * objects.
-	 *
-	 * Let "--missing" to conditionally set fetch_if_missing.
-	 */
-	for (i = 1; i < argc; i++) {
-		const char *arg = argv[i];
-		if (!strcmp(arg, "--exclude-promisor-objects")) {
-			fetch_if_missing = 0;
-			revs.exclude_promisor_objects = 1;
-			break;
-		}
-	}
-	for (i = 1; i < argc; i++) {
-		const char *arg = argv[i];
-		if (skip_prefix(arg, "--missing=", &arg)) {
-			if (revs.exclude_promisor_objects)
-				die(_("cannot combine --exclude-promisor-objects and --missing"));
-			if (parse_missing_action_value(arg))
-				break;
-		}
-	}
-
 	argc = setup_revisions(argc, argv, &revs, NULL);
 
 	memset(&info, 0, sizeof(info));
@@ -407,7 +291,7 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 	if (revs.bisect)
 		bisect_list = 1;
 
-	if (revs.diffopt.flags.quick)
+	if (DIFF_OPT_TST(&revs.diffopt, QUICK))
 		info.flags |= REV_LIST_QUIET;
 	for (i = 1 ; i < argc; i++) {
 		const char *arg = argv[i];
@@ -444,35 +328,6 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 			test_bitmap_walk(&revs);
 			return 0;
 		}
-		if (skip_prefix(arg, "--progress=", &arg)) {
-			show_progress = arg;
-			continue;
-		}
-
-		if (skip_prefix(arg, ("--" CL_ARG__FILTER "="), &arg)) {
-			parse_list_objects_filter(&filter_options, arg);
-			if (filter_options.choice && !revs.blob_objects)
-				die(_("object filtering requires --objects"));
-			if (filter_options.choice == LOFC_SPARSE_OID &&
-			    !filter_options.sparse_oid_value)
-				die(_("invalid sparse value '%s'"),
-				    filter_options.filter_spec);
-			continue;
-		}
-		if (!strcmp(arg, ("--no-" CL_ARG__FILTER))) {
-			list_objects_filter_set_no_filter(&filter_options);
-			continue;
-		}
-		if (!strcmp(arg, "--filter-print-omitted")) {
-			arg_print_omitted = 1;
-			continue;
-		}
-
-		if (!strcmp(arg, "--exclude-promisor-objects"))
-			continue; /* already handled above */
-		if (skip_prefix(arg, "--missing=", &arg))
-			continue; /* already handled above */
-
 		usage(rev_list_usage);
 
 	}
@@ -488,18 +343,11 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 		/* Only --header was specified */
 		revs.commit_format = CMIT_FMT_RAW;
 
-	if ((!revs.commits && reflog_walk_empty(revs.reflog_info) &&
+	if ((!revs.commits &&
 	     (!(revs.tag_objects || revs.tree_objects || revs.blob_objects) &&
-	      !revs.pending.nr) &&
-	     !revs.rev_input_given) ||
+	      !revs.pending.nr)) ||
 	    revs.diff)
 		usage(rev_list_usage);
-
-	if (revs.show_notes)
-		die(_("rev-list does not support display of notes"));
-
-	if (filter_options.choice && use_bitmap_index)
-		die(_("cannot combine --use-bitmap-index with object filtering"));
 
 	save_commit_buffer = (revs.verbose_header ||
 			      revs.grep_filter.pattern_list ||
@@ -507,22 +355,15 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 	if (bisect_list)
 		revs.limited = 1;
 
-	if (show_progress)
-		progress = start_delayed_progress(show_progress, 0);
-
-	if (use_bitmap_index && !revs.prune) {
+	if (use_bitmap_index) {
 		if (revs.count && !revs.left_right && !revs.cherry_mark) {
 			uint32_t commit_count;
-			int max_count = revs.max_count;
 			if (!prepare_bitmap_walk(&revs)) {
 				count_bitmap_commit_list(&commit_count, NULL, NULL, NULL);
-				if (max_count >= 0 && max_count < commit_count)
-					commit_count = max_count;
 				printf("%d\n", commit_count);
 				return 0;
 			}
-		} else if (revs.max_count < 0 &&
-			   revs.tag_objects && revs.tree_objects && revs.blob_objects) {
+		} else if (revs.tag_objects && revs.tree_objects && revs.blob_objects) {
 			if (!prepare_bitmap_walk(&revs)) {
 				traverse_bitmap_commit_list(&show_object_fast);
 				return 0;
@@ -538,39 +379,14 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 	if (bisect_list) {
 		int reaches = reaches, all = all;
 
-		find_bisection(&revs.commits, &reaches, &all, bisect_find_all);
+		revs.commits = find_bisection(revs.commits, &reaches, &all,
+					      bisect_find_all);
 
 		if (bisect_show_vars)
 			return show_bisect_vars(&info, reaches, all);
 	}
 
-	if (arg_print_omitted)
-		oidset_init(&omitted_objects, DEFAULT_OIDSET_SIZE);
-	if (arg_missing_action == MA_PRINT)
-		oidset_init(&missing_objects, DEFAULT_OIDSET_SIZE);
-
-	traverse_commit_list_filtered(
-		&filter_options, &revs, show_commit, show_object, &info,
-		(arg_print_omitted ? &omitted_objects : NULL));
-
-	if (arg_print_omitted) {
-		struct oidset_iter iter;
-		struct object_id *oid;
-		oidset_iter_init(&omitted_objects, &iter);
-		while ((oid = oidset_iter_next(&iter)))
-			printf("~%s\n", oid_to_hex(oid));
-		oidset_clear(&omitted_objects);
-	}
-	if (arg_missing_action == MA_PRINT) {
-		struct oidset_iter iter;
-		struct object_id *oid;
-		oidset_iter_init(&missing_objects, &iter);
-		while ((oid = oidset_iter_next(&iter)))
-			printf("?%s\n", oid_to_hex(oid));
-		oidset_clear(&missing_objects);
-	}
-
-	stop_progress(&progress);
+	traverse_commit_list(&revs, show_commit, show_object, &info);
 
 	if (revs.count) {
 		if (revs.left_right && revs.cherry_mark)

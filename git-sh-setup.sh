@@ -43,9 +43,6 @@ git_broken_path_fix () {
 
 # @@BROKEN_PATH_FIX@@
 
-# Source git-sh-i18n for gettext support.
-. "$(git --exec-path)/git-sh-i18n"
-
 die () {
 	die_with_status 1 "$@"
 }
@@ -86,16 +83,16 @@ if test -n "$OPTIONS_SPEC"; then
 else
 	dashless=$(basename -- "$0" | sed -e 's/-/ /')
 	usage() {
-		die "$(eval_gettext "usage: \$dashless \$USAGE")"
+		die "usage: $dashless $USAGE"
 	}
 
 	if [ -z "$LONG_USAGE" ]
 	then
-		LONG_USAGE="$(eval_gettext "usage: \$dashless \$USAGE")"
+		LONG_USAGE="usage: $dashless $USAGE"
 	else
-		LONG_USAGE="$(eval_gettext "usage: \$dashless \$USAGE
+		LONG_USAGE="usage: $dashless $USAGE
 
-$LONG_USAGE")"
+$LONG_USAGE"
 	fi
 
 	case "$1" in
@@ -163,21 +160,19 @@ git_pager() {
 	else
 		GIT_PAGER=cat
 	fi
-	for vardef in @@PAGER_ENV@@
-	do
-		var=${vardef%%=*}
-		eval ": \"\${$vardef}\" && export $var"
-	done
+	: ${LESS=-FRX}
+	: ${LV=-c}
+	export LESS LV
 
 	eval "$GIT_PAGER" '"$@"'
 }
 
 sane_grep () {
-	GREP_OPTIONS= LC_ALL=C grep @@SANE_TEXT_GREP@@ "$@"
+	GREP_OPTIONS= LC_ALL=C grep "$@"
 }
 
 sane_egrep () {
-	GREP_OPTIONS= LC_ALL=C egrep @@SANE_TEXT_GREP@@ "$@"
+	GREP_OPTIONS= LC_ALL=C egrep "$@"
 }
 
 is_bare_repository () {
@@ -187,7 +182,7 @@ is_bare_repository () {
 cd_to_toplevel () {
 	cdup=$(git rev-parse --show-toplevel) &&
 	cd "$cdup" || {
-		gettextln "Cannot chdir to \$cdup, the toplevel of the working tree" >&2
+		echo >&2 "Cannot chdir to $cdup, the toplevel of the working tree"
 		exit 1
 	}
 }
@@ -195,16 +190,13 @@ cd_to_toplevel () {
 require_work_tree_exists () {
 	if test "z$(git rev-parse --is-bare-repository)" != zfalse
 	then
-		program_name=$0
-		die "$(eval_gettext "fatal: \$program_name cannot be used without a working tree.")"
+		die "fatal: $0 cannot be used without a working tree."
 	fi
 }
 
 require_work_tree () {
-	test "$(git rev-parse --is-inside-work-tree 2>/dev/null)" = true || {
-		program_name=$0
-		die "$(eval_gettext "fatal: \$program_name cannot be used without a working tree.")"
-	}
+	test "$(git rev-parse --is-inside-work-tree 2>/dev/null)" = true ||
+	die "fatal: $0 cannot be used without a working tree."
 }
 
 require_clean_work_tree () {
@@ -214,49 +206,24 @@ require_clean_work_tree () {
 
 	if ! git diff-files --quiet --ignore-submodules
 	then
-		action=$1
-		case "$action" in
-		rebase)
-			gettextln "Cannot rebase: You have unstaged changes." >&2
-			;;
-		"rewrite branches")
-			gettextln "Cannot rewrite branches: You have unstaged changes." >&2
-			;;
-		"pull with rebase")
-			gettextln "Cannot pull with rebase: You have unstaged changes." >&2
-			;;
-		*)
-			eval_gettextln "Cannot \$action: You have unstaged changes." >&2
-			;;
-		esac
+		echo >&2 "Cannot $1: You have unstaged changes."
 		err=1
 	fi
 
 	if ! git diff-index --cached --quiet --ignore-submodules HEAD --
 	then
-		if test $err = 0
+		if [ $err = 0 ]
 		then
-			action=$1
-			case "$action" in
-			rebase)
-				gettextln "Cannot rebase: Your index contains uncommitted changes." >&2
-				;;
-			"pull with rebase")
-				gettextln "Cannot pull with rebase: Your index contains uncommitted changes." >&2
-				;;
-			*)
-				eval_gettextln "Cannot \$action: Your index contains uncommitted changes." >&2
-				;;
-			esac
+		    echo >&2 "Cannot $1: Your index contains uncommitted changes."
 		else
-		    gettextln "Additionally, your index contains uncommitted changes." >&2
+		    echo >&2 "Additionally, your index contains uncommitted changes."
 		fi
 		err=1
 	fi
 
-	if test $err = 1
+	if [ $err = 1 ]
 	then
-		test -n "$2" && echo "$2" >&2
+		test -n "$2" && echo >&2 "$2"
 		exit 1
 	fi
 }
@@ -369,15 +336,15 @@ git_dir_init () {
 	then
 		test -z "$(git rev-parse --show-cdup)" || {
 			exit=$?
-			gettextln "You need to run this command from the toplevel of the working tree." >&2
+			echo >&2 "You need to run this command from the toplevel of the working tree."
 			exit $exit
 		}
 	fi
 	test -n "$GIT_DIR" && GIT_DIR=$(cd "$GIT_DIR" && pwd) || {
-		gettextln "Unable to determine absolute path of git directory" >&2
+		echo >&2 "Unable to determine absolute path of git directory"
 		exit 1
 	}
-	: "${GIT_OBJECT_DIRECTORY="$(git rev-parse --git-path objects)"}"
+	: ${GIT_OBJECT_DIRECTORY="$GIT_DIR/objects"}
 }
 
 if test -z "$NONGIT_OK"

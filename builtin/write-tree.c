@@ -5,7 +5,6 @@
  */
 #include "builtin.h"
 #include "cache.h"
-#include "config.h"
 #include "tree.h"
 #include "cache-tree.h"
 #include "parse-options.h"

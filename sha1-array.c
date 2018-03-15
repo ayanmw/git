@@ -2,61 +2,58 @@
 #include "sha1-array.h"
 #include "sha1-lookup.h"
 
-void oid_array_append(struct oid_array *array, const struct object_id *oid)
+void sha1_array_append(struct sha1_array *array, const unsigned char *sha1)
 {
-	ALLOC_GROW(array->oid, array->nr + 1, array->alloc);
-	oidcpy(&array->oid[array->nr++], oid);
+	ALLOC_GROW(array->sha1, array->nr + 1, array->alloc);
+	hashcpy(array->sha1[array->nr++], sha1);
 	array->sorted = 0;
 }
 
 static int void_hashcmp(const void *a, const void *b)
 {
-	return oidcmp(a, b);
+	return hashcmp(a, b);
 }
 
-static void oid_array_sort(struct oid_array *array)
+static void sha1_array_sort(struct sha1_array *array)
 {
-	QSORT(array->oid, array->nr, void_hashcmp);
+	qsort(array->sha1, array->nr, sizeof(*array->sha1), void_hashcmp);
 	array->sorted = 1;
 }
 
 static const unsigned char *sha1_access(size_t index, void *table)
 {
-	struct object_id *array = table;
-	return array[index].hash;
+	unsigned char (*array)[20] = table;
+	return array[index];
 }
 
-int oid_array_lookup(struct oid_array *array, const struct object_id *oid)
+int sha1_array_lookup(struct sha1_array *array, const unsigned char *sha1)
 {
 	if (!array->sorted)
-		oid_array_sort(array);
-	return sha1_pos(oid->hash, array->oid, array->nr, sha1_access);
+		sha1_array_sort(array);
+	return sha1_pos(sha1, array->sha1, array->nr, sha1_access);
 }
 
-void oid_array_clear(struct oid_array *array)
+void sha1_array_clear(struct sha1_array *array)
 {
-	FREE_AND_NULL(array->oid);
+	free(array->sha1);
+	array->sha1 = NULL;
 	array->nr = 0;
 	array->alloc = 0;
 	array->sorted = 0;
 }
 
-int oid_array_for_each_unique(struct oid_array *array,
-				for_each_oid_fn fn,
+void sha1_array_for_each_unique(struct sha1_array *array,
+				for_each_sha1_fn fn,
 				void *data)
 {
 	int i;
 
 	if (!array->sorted)
-		oid_array_sort(array);
+		sha1_array_sort(array);
 
 	for (i = 0; i < array->nr; i++) {
-		int ret;
-		if (i > 0 && !oidcmp(array->oid + i, array->oid + i - 1))
+		if (i > 0 && !hashcmp(array->sha1[i], array->sha1[i-1]))
 			continue;
-		ret = fn(array->oid + i, data);
-		if (ret)
-			return ret;
+		fn(array->sha1[i], data);
 	}
-	return 0;
 }

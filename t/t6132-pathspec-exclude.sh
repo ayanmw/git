@@ -7,7 +7,7 @@ test_description='test case exclude pathspec'
 test_expect_success 'setup' '
 	for p in file sub/file sub/sub/file sub/file2 sub/sub/sub/file sub2/file; do
 		if echo $p | grep /; then
-			mkdir -p $(dirname $p)
+			mkdir -p `dirname $p`
 		fi &&
 		: >$p &&
 		git add $p &&
@@ -25,10 +25,8 @@ EOF
 	test_cmp expect actual
 '
 
-test_expect_success 'exclude only pathspec uses default implicit pathspec' '
-	git log --oneline --format=%s -- . ":(exclude)sub" >expect &&
-	git log --oneline --format=%s -- ":(exclude)sub" >actual &&
-	test_cmp expect actual
+test_expect_success 'exclude only should error out' '
+	test_must_fail git log --oneline --format=%s -- ":(exclude)sub"
 '
 
 test_expect_success 't_e_i() exclude sub' '
@@ -180,17 +178,6 @@ sub/file2
 sub/sub/sub/file
 sub2/file
 EOF
-	test_cmp expect actual
-'
-
-test_expect_success 'multiple exclusions' '
-	git ls-files -- ":^*/file2" ":^sub2" >actual &&
-	cat <<-\EOF >expect &&
-	file
-	sub/file
-	sub/sub/file
-	sub/sub/sub/file
-	EOF
 	test_cmp expect actual
 '
 

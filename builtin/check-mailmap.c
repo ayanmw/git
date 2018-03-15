@@ -1,5 +1,4 @@
 #include "builtin.h"
-#include "config.h"
 #include "mailmap.h"
 #include "parse-options.h"
 #include "string-list.h"
@@ -55,7 +54,7 @@ int cmd_check_mailmap(int argc, const char **argv, const char *prefix)
 
 	if (use_stdin) {
 		struct strbuf buf = STRBUF_INIT;
-		while (strbuf_getline_lf(&buf, stdin) != EOF) {
+		while (strbuf_getline(&buf, stdin, '\n') != EOF) {
 			check_mailmap(&mailmap, buf.buf);
 			maybe_flush_or_die(stdout, "stdout");
 		}

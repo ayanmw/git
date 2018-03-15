@@ -19,17 +19,16 @@ static int alloc, used;
 static void append_to_tree(unsigned mode, unsigned char *sha1, char *path)
 {
 	struct treeent *ent;
-	size_t len = strlen(path);
+	int len = strlen(path);
 	if (strchr(path, '/'))
 		die("path %s contains slash", path);
 
-	FLEX_ALLOC_MEM(ent, name, path, len);
+	ALLOC_GROW(entries, used + 1, alloc);
+	ent = entries[used++] = xmalloc(sizeof(**entries) + len + 1);
 	ent->mode = mode;
 	ent->len = len;
 	hashcpy(ent->sha1, sha1);
-
-	ALLOC_GROW(entries, used + 1, alloc);
-	entries[used++] = ent;
+	memcpy(ent->name, path, len+1);
 }
 
 static int ent_compare(const void *a_, const void *b_)
@@ -40,13 +39,13 @@ static int ent_compare(const void *a_, const void *b_)
 				 b->name, b->len, b->mode);
 }
 
-static void write_tree(struct object_id *oid)
+static void write_tree(unsigned char *sha1)
 {
 	struct strbuf buf;
 	size_t size;
 	int i;
 
-	QSORT(entries, used, ent_compare);
+	qsort(entries, used, sizeof(*entries), ent_compare);
 	for (size = i = 0; i < used; i++)
 		size += 32 + entries[i]->len;
 
@@ -57,7 +56,7 @@ static void write_tree(struct object_id *oid)
 		strbuf_add(&buf, ent->sha1, 20);
 	}
 
-	write_object_file(buf.buf, buf.len, tree_type, oid);
+	write_sha1_file(buf.buf, buf.len, tree_type, sha1);
 	strbuf_release(&buf);
 }
 
@@ -66,13 +65,13 @@ static const char *mktree_usage[] = {
 	NULL
 };
 
-static void mktree_line(char *buf, size_t len, int nul_term_line, int allow_missing)
+static void mktree_line(char *buf, size_t len, int line_termination, int allow_missing)
 {
 	char *ptr, *ntr;
 	unsigned mode;
 	enum object_type mode_type; /* object type derived from mode */
 	enum object_type obj_type; /* object type derived from sha */
-	char *path, *to_free = NULL;
+	char *path;
 	unsigned char sha1[20];
 
 	ptr = buf;
@@ -98,11 +97,11 @@ static void mktree_line(char *buf, size_t len, int nul_term_line, int allow_miss
 	*ntr++ = 0; /* now at the beginning of SHA1 */
 
 	path = ntr + 41;  /* at the beginning of name */
-	if (!nul_term_line && path[0] == '"') {
+	if (line_termination && path[0] == '"') {
 		struct strbuf p_uq = STRBUF_INIT;
 		if (unquote_c_style(&p_uq, path, NULL))
 			die("invalid quoting");
-		path = to_free = strbuf_detach(&p_uq, NULL);
+		path = strbuf_detach(&p_uq, NULL);
 	}
 
 	/*
@@ -112,7 +111,7 @@ static void mktree_line(char *buf, size_t len, int nul_term_line, int allow_miss
 	mode_type = object_type(mode);
 	if (mode_type != type_from_string(ptr)) {
 		die("entry '%s' object type (%s) doesn't match mode type (%s)",
-			path, ptr, type_name(mode_type));
+			path, ptr, typename(mode_type));
 	}
 
 	/* Check the type of object identified by sha1 */
@@ -131,37 +130,34 @@ static void mktree_line(char *buf, size_t len, int nul_term_line, int allow_miss
 			 * because the new tree entry will never be correct.
 			 */
 			die("entry '%s' object %s is a %s but specified type was (%s)",
-				path, sha1_to_hex(sha1), type_name(obj_type), type_name(mode_type));
+				path, sha1_to_hex(sha1), typename(obj_type), typename(mode_type));
 		}
 	}
 
 	append_to_tree(mode, sha1, path);
-	free(to_free);
 }
 
 int cmd_mktree(int ac, const char **av, const char *prefix)
 {
 	struct strbuf sb = STRBUF_INIT;
-	struct object_id oid;
-	int nul_term_line = 0;
+	unsigned char sha1[20];
+	int line_termination = '\n';
 	int allow_missing = 0;
 	int is_batch_mode = 0;
 	int got_eof = 0;
-	strbuf_getline_fn getline_fn;
 
 	const struct option option[] = {
-		OPT_BOOL('z', NULL, &nul_term_line, N_("input is NUL terminated")),
+		OPT_SET_INT('z', NULL, &line_termination, N_("input is NUL terminated"), '\0'),
 		OPT_SET_INT( 0 , "missing", &allow_missing, N_("allow missing objects"), 1),
 		OPT_SET_INT( 0 , "batch", &is_batch_mode, N_("allow creation of more than one tree"), 1),
 		OPT_END()
 	};
 
 	ac = parse_options(ac, av, prefix, option, mktree_usage, 0);
-	getline_fn = nul_term_line ? strbuf_getline_nul : strbuf_getline_lf;
 
 	while (!got_eof) {
 		while (1) {
-			if (getline_fn(&sb, stdin) == EOF) {
+			if (strbuf_getline(&sb, stdin, line_termination) == EOF) {
 				got_eof = 1;
 				break;
 			}
@@ -171,7 +167,7 @@ int cmd_mktree(int ac, const char **av, const char *prefix)
 					break;
 				die("input format error: (blank line only valid in batch mode)");
 			}
-			mktree_line(sb.buf, sb.len, nul_term_line, allow_missing);
+			mktree_line(sb.buf, sb.len, line_termination, allow_missing);
 		}
 		if (is_batch_mode && got_eof && used < 1) {
 			/*
@@ -181,8 +177,8 @@ int cmd_mktree(int ac, const char **av, const char *prefix)
 			 */
 			; /* skip creating an empty tree */
 		} else {
-			write_tree(&oid);
-			puts(oid_to_hex(&oid));
+			write_tree(sha1);
+			puts(sha1_to_hex(sha1));
 			fflush(stdout);
 		}
 		used=0; /* reset tree entry buffer for re-use in batch mode */

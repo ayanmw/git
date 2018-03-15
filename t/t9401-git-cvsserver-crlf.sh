@@ -74,11 +74,11 @@ perl -e 'use DBI; use DBD::SQLite' >/dev/null 2>&1 || {
 }
 
 unset GIT_DIR GIT_CONFIG
-WORKDIR=$PWD
-SERVERDIR=$PWD/gitcvs.git
+WORKDIR=$(pwd)
+SERVERDIR=$(pwd)/gitcvs.git
 git_config="$SERVERDIR/config"
 CVSROOT=":fork:$SERVERDIR"
-CVSWORK="$PWD/cvswork"
+CVSWORK="$(pwd)/cvswork"
 CVS_SERVER=git-cvsserver
 export CVSROOT CVS_SERVER
 
@@ -154,7 +154,7 @@ test_expect_success 'adding files' '
     echo "more text" > src.c &&
     GIT_CONFIG="$git_config" cvs -Q add src.c >cvs.log 2>&1 &&
     marked_as . src.c "" &&
-    echo "pseudo-binary" > temp.bin
+    echo "psuedo-binary" > temp.bin
     ) &&
     GIT_CONFIG="$git_config" cvs -Q add subdir/temp.bin >cvs.log 2>&1 &&
     marked_as subdir temp.bin "-kb" &&

@@ -22,7 +22,7 @@ int cmd_upload_archive_writer(int argc, const char **argv, const char *prefix)
 	struct argv_array sent_argv = ARGV_ARRAY_INIT;
 	const char *arg_cmd = "argument ";
 
-	if (argc != 2 || !strcmp(argv[1], "-h"))
+	if (argc != 2)
 		usage(upload_archive_usage);
 
 	if (!enter_repo(argv[1], 0))
@@ -43,20 +43,21 @@ int cmd_upload_archive_writer(int argc, const char **argv, const char *prefix)
 	}
 
 	/* parse all options sent by the client */
-	return write_archive(sent_argv.argc, sent_argv.argv, prefix, NULL, 1);
+	return write_archive(sent_argv.argc, sent_argv.argv, prefix, 0, NULL, 1);
 }
 
 __attribute__((format (printf, 1, 2)))
 static void error_clnt(const char *fmt, ...)
 {
-	struct strbuf buf = STRBUF_INIT;
+	char buf[1024];
 	va_list params;
+	int len;
 
 	va_start(params, fmt);
-	strbuf_vaddf(&buf, fmt, params);
+	len = vsprintf(buf, fmt, params);
 	va_end(params);
-	send_sideband(1, 3, buf.buf, buf.len, LARGE_PACKET_MAX);
-	die("sent error to the client: %s", buf.buf);
+	send_sideband(1, 3, buf, len, LARGE_PACKET_MAX);
+	die("sent error to the client: %s", buf);
 }
 
 static ssize_t process_input(int child_fd, int band)
@@ -76,9 +77,6 @@ int cmd_upload_archive(int argc, const char **argv, const char *prefix)
 {
 	struct child_process writer = { argv };
 
-	if (argc == 2 && !strcmp(argv[1], "-h"))
-		usage(upload_archive_usage);
-
 	/*
 	 * Set up sideband subprocess.
 	 *
@@ -91,11 +89,11 @@ int cmd_upload_archive(int argc, const char **argv, const char *prefix)
 	writer.git_cmd = 1;
 	if (start_command(&writer)) {
 		int err = errno;
-		packet_write_fmt(1, "NACK unable to spawn subprocess\n");
+		packet_write(1, "NACK unable to spawn subprocess\n");
 		die("upload-archive: %s", strerror(err));
 	}
 
-	packet_write_fmt(1, "ACK\n");
+	packet_write(1, "ACK\n");
 	packet_flush(1);
 
 	while (1) {
@@ -107,7 +105,8 @@ int cmd_upload_archive(int argc, const char **argv, const char *prefix)
 		pfd[1].events = POLLIN;
 		if (poll(pfd, 2, -1) < 0) {
 			if (errno != EINTR) {
-				error_errno("poll failed resuming");
+				error("poll failed resuming: %s",
+				      strerror(errno));
 				sleep(1);
 			}
 			continue;

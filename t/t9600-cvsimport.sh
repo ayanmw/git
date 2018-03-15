@@ -3,11 +3,6 @@
 test_description='git cvsimport basic tests'
 . ./lib-cvs.sh
 
-if ! test_have_prereq NOT_ROOT; then
-	skip_all='When cvs is compiled with CVS_BADROOT commits as root fail'
-	test_done
-fi
-
 test_expect_success PERL 'setup cvsroot environment' '
 	CVSROOT=$(pwd)/cvsroot &&
 	export CVSROOT

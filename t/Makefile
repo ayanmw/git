@@ -8,7 +8,6 @@
 
 #GIT_TEST_OPTS = --verbose --debug
 SHELL_PATH ?= $(SHELL)
-TEST_SHELL_PATH ?= $(SHELL_PATH)
 PERL_PATH ?= /usr/bin/perl
 TAR ?= $(TAR)
 RM ?= rm -f
@@ -24,11 +23,11 @@ endif
 
 # Shell quote;
 SHELL_PATH_SQ = $(subst ','\'',$(SHELL_PATH))
-TEST_SHELL_PATH_SQ = $(subst ','\'',$(TEST_SHELL_PATH))
 PERL_PATH_SQ = $(subst ','\'',$(PERL_PATH))
 TEST_RESULTS_DIRECTORY_SQ = $(subst ','\'',$(TEST_RESULTS_DIRECTORY))
 
 T = $(sort $(wildcard t[0-9][0-9][0-9][0-9]-*.sh))
+TSVN = $(sort $(wildcard t91[0-9][0-9]-*.sh))
 TGITWEB = $(sort $(wildcard t95[0-9][0-9]-*.sh))
 THELPERS = $(sort $(filter-out $(T),$(wildcard *.sh)))
 
@@ -37,18 +36,12 @@ all: $(DEFAULT_TEST_TARGET)
 test: pre-clean $(TEST_LINT)
 	$(MAKE) aggregate-results-and-cleanup
 
-failed:
-	@failed=$$(cd '$(TEST_RESULTS_DIRECTORY_SQ)' && \
-		grep -l '^failed [1-9]' *.counts | \
-		sed -n 's/\.counts$$/.sh/p') && \
-	test -z "$$failed" || $(MAKE) $$failed
-
 prove: pre-clean $(TEST_LINT)
-	@echo "*** prove ***"; $(PROVE) --exec '$(TEST_SHELL_PATH_SQ)' $(GIT_PROVE_OPTS) $(T) :: $(GIT_TEST_OPTS)
+	@echo "*** prove ***"; $(PROVE) --exec '$(SHELL_PATH_SQ)' $(GIT_PROVE_OPTS) $(T) :: $(GIT_TEST_OPTS)
 	$(MAKE) clean-except-prove-cache
 
 $(T):
-	@echo "*** $@ ***"; '$(TEST_SHELL_PATH_SQ)' $@ $(GIT_TEST_OPTS)
+	@echo "*** $@ ***"; '$(SHELL_PATH_SQ)' $@ $(GIT_TEST_OPTS)
 
 pre-clean:
 	$(RM) -r '$(TEST_RESULTS_DIRECTORY_SQ)'
@@ -60,8 +53,7 @@ clean-except-prove-cache:
 clean: clean-except-prove-cache
 	$(RM) .prove
 
-test-lint: test-lint-duplicates test-lint-executable test-lint-shell-syntax \
-	test-lint-filenames
+test-lint: test-lint-duplicates test-lint-executable test-lint-shell-syntax
 
 test-lint-duplicates:
 	@dups=`echo $(T) | tr ' ' '\n' | sed 's/-.*//' | sort | uniq -d` && \
@@ -76,14 +68,6 @@ test-lint-executable:
 test-lint-shell-syntax:
 	@'$(PERL_PATH_SQ)' check-non-portable-shell.pl $(T) $(THELPERS)
 
-test-lint-filenames:
-	@# We do *not* pass a glob to ls-files but use grep instead, to catch
-	@# non-ASCII characters (which are quoted within double-quotes)
-	@bad="$$(git -c core.quotepath=true ls-files 2>/dev/null | \
-			grep '["*:<>?\\|]')"; \
-		test -z "$$bad" || { \
-		echo >&2 "non-portable file name(s): $$bad"; exit 1; }
-
 aggregate-results-and-cleanup: $(T)
 	$(MAKE) aggregate-results
 	$(MAKE) clean
@@ -92,6 +76,11 @@ aggregate-results:
 	for f in '$(TEST_RESULTS_DIRECTORY_SQ)'/t*-*.counts; do \
 		echo "$$f"; \
 	done | '$(SHELL_PATH_SQ)' ./aggregate-results.sh
+
+# we can test NO_OPTIMIZE_COMMITS independently of LC_ALL
+full-svn-test:
+	$(MAKE) $(TSVN) GIT_SVN_NO_OPTIMIZE_COMMITS=1 LC_ALL=C
+	$(MAKE) $(TSVN) GIT_SVN_NO_OPTIMIZE_COMMITS=0 LC_ALL=en_US.UTF-8
 
 gitweb-test:
 	$(MAKE) $(TGITWEB)
