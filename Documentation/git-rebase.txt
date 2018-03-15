@@ -3,7 +3,7 @@ git-rebase(1)
 
 NAME
 ----
-git-rebase - Forward-port local commits to the updated upstream head
+git-rebase - Reapply commits on top of another base tip
 
 SYNOPSIS
 --------
@@ -12,7 +12,7 @@ SYNOPSIS
 	[<upstream> [<branch>]]
 'git rebase' [-i | --interactive] [options] [--exec <cmd>] [--onto <newbase>]
 	--root [<branch>]
-'git rebase' --continue | --skip | --abort | --edit-todo
+'git rebase' --continue | --skip | --abort | --quit | --edit-todo | --show-current-patch
 
 DESCRIPTION
 -----------
@@ -80,7 +80,7 @@ remain the checked-out branch.
 If the upstream branch already contains a change you have made (e.g.,
 because you mailed a patch which was applied upstream), then that commit
 will be skipped. For example, running `git rebase master` on the
-following history (in which A' and A introduce the same set of changes,
+following history (in which `A'` and `A` introduce the same set of changes,
 but have different committer information):
 
 ------------
@@ -203,15 +203,7 @@ Alternatively, you can undo the 'git rebase' with
 CONFIGURATION
 -------------
 
-rebase.stat::
-	Whether to show a diffstat of what changed upstream since the last
-	rebase. False by default.
-
-rebase.autoSquash::
-	If set to true enable '--autosquash' option by default.
-
-rebase.autoStash::
-	If set to true enable '--autostash' option by default.
+include::rebase-config.txt[]
 
 OPTIONS
 -------
@@ -243,15 +235,30 @@ leave out at most one of A and B, in which case it defaults to HEAD.
 	will be reset to where it was when the rebase operation was
 	started.
 
+--quit::
+	Abort the rebase operation but HEAD is not reset back to the
+	original branch. The index and working tree are also left
+	unchanged as a result.
+
 --keep-empty::
 	Keep the commits that do not change anything from its
 	parents in the result.
+
+--allow-empty-message::
+	By default, rebasing commits with an empty message will fail.
+	This option overrides that behavior, allowing commits with empty
+	messages to be rebased.
 
 --skip::
 	Restart the rebasing process by skipping the current patch.
 
 --edit-todo::
 	Edit the todo list during an interactive rebase.
+
+--show-current-patch::
+	Show the current patch in an interactive rebase or when rebase
+	is stopped because of conflicts. This is the equivalent of
+	`git show REBASE_HEAD`.
 
 -m::
 --merge::
@@ -285,7 +292,9 @@ which makes little sense.
 
 -S[<keyid>]::
 --gpg-sign[=<keyid>]::
-	GPG-sign commits.
+	GPG-sign commits. The `keyid` argument is optional and
+	defaults to the committer identity; if specified, it must be
+	stuck to the option without a space.
 
 -q::
 --quiet::
@@ -318,7 +327,7 @@ which makes little sense.
 
 -f::
 --force-rebase::
-	Force a rebase even if the current branch is up-to-date and
+	Force a rebase even if the current branch is up to date and
 	the command without `--force` would return without doing anything.
 +
 You may find this (or --no-ff with an interactive rebase) helpful after
@@ -354,11 +363,20 @@ default is `--no-fork-point`, otherwise the default is `--fork-point`.
 	of the rebased commits (see linkgit:git-am[1]).
 	Incompatible with the --interactive option.
 
+--signoff::
+	This flag is passed to 'git am' to sign off all the rebased
+	commits (see linkgit:git-am[1]). Incompatible with the
+	--interactive option.
+
 -i::
 --interactive::
 	Make a list of the commits which are about to be rebased.  Let the
 	user edit that list before rebasing.  This mode can also be used to
 	split commits (see SPLITTING COMMITS below).
++
+The commit list format can be changed by setting the configuration option
+rebase.instructionFormat.  A customized instruction format will automatically
+have the long commit hash prepended to the format.
 
 -p::
 --preserve-merges::
@@ -376,9 +394,6 @@ idea unless you know what you are doing (see BUGS below).
 	final history. <cmd> will be interpreted as one or more shell
 	commands.
 +
-This option can only be used with the `--interactive` option
-(see INTERACTIVE MODE below).
-+
 You may execute several commands by either using one instance of `--exec`
 with several commands:
 +
@@ -391,6 +406,9 @@ or by giving more than one `--exec`:
 If `--autosquash` is used, "exec" lines will not be appended for
 the intermediate commits, and will only appear at the end of each
 squash/fixup series.
++
+This uses the `--interactive` machinery internally, but it can be run
+without an explicit `--interactive`.
 
 --root::
 	Rebase all commits reachable from <branch>, instead of
@@ -405,22 +423,25 @@ squash/fixup series.
 --autosquash::
 --no-autosquash::
 	When the commit log message begins with "squash! ..." (or
-	"fixup! ..."), and there is a commit whose title begins with
-	the same ..., automatically modify the todo list of rebase -i
-	so that the commit marked for squashing comes right after the
-	commit to be modified, and change the action of the moved
-	commit from `pick` to `squash` (or `fixup`).  Ignores subsequent
-	"fixup! " or "squash! " after the first, in case you referred to an
-	earlier fixup/squash with `git commit --fixup/--squash`.
+	"fixup! ..."), and there is already a commit in the todo list that
+	matches the same `...`, automatically modify the todo list of rebase
+	-i so that the commit marked for squashing comes right after the
+	commit to be modified, and change the action of the moved commit
+	from `pick` to `squash` (or `fixup`).  A commit matches the `...` if
+	the commit subject matches, or if the `...` refers to the commit's
+	hash. As a fall-back, partial matches of the commit subject work,
+	too.  The recommended way to create fixup/squash commits is by using
+	the `--fixup`/`--squash` options of linkgit:git-commit[1].
 +
-This option is only valid when the '--interactive' option is used.
+This option is only valid when the `--interactive` option is used.
 +
-If the '--autosquash' option is enabled by default using the
+If the `--autosquash` option is enabled by default using the
 configuration variable `rebase.autoSquash`, this option can be
 used to override and disable this setting.
 
---[no-]autostash::
-	Automatically create a temporary stash before the operation
+--autostash::
+--no-autostash::
+	Automatically create a temporary stash entry before the operation
 	begins, and apply it after the operation ends.  This means
 	that you can run rebase on a dirty worktree.  However, use
 	with care: the final stash application after a successful
@@ -513,6 +534,9 @@ rebasing.
 
 If you just want to edit the commit message for a commit, replace the
 command "pick" with the command "reword".
+
+To drop a commit, replace the command "pick" with "drop", or just
+delete the matching line.
 
 If you want to fold two or more commits into one, replace the command
 "pick" for the second and subsequent commits with "squash" or "fixup".
@@ -646,7 +670,7 @@ on this 'subsystem'.  You might end up with a history like the
 following:
 
 ------------
-    o---o---o---o---o---o---o---o---o  master
+    o---o---o---o---o---o---o---o  master
 	 \
 	  o---o---o---o---o  subsystem
 			   \
