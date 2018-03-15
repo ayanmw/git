@@ -14,24 +14,14 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 #ifndef __EWOK_BITMAP_H__
 #define __EWOK_BITMAP_H__
 
-#ifndef ewah_malloc
-#	define ewah_malloc xmalloc
-#endif
-#ifndef ewah_realloc
-#	define ewah_realloc xrealloc
-#endif
-#ifndef ewah_calloc
-#	define ewah_calloc xcalloc
-#endif
-
+struct strbuf;
 typedef uint64_t eword_t;
-#define BITS_IN_WORD (sizeof(eword_t) * 8)
+#define BITS_IN_EWORD (sizeof(eword_t) * 8)
 
 /**
  * Do not use __builtin_popcountll. The GCC implementation
@@ -98,6 +88,7 @@ int ewah_serialize_to(struct ewah_bitmap *self,
 		      void *out);
 int ewah_serialize(struct ewah_bitmap *self, int fd);
 int ewah_serialize_native(struct ewah_bitmap *self, int fd);
+int ewah_serialize_strbuf(struct ewah_bitmap *self, struct strbuf *);
 
 int ewah_deserialize(struct ewah_bitmap *self, int fd);
 int ewah_read_mmap(struct ewah_bitmap *self, const void *map, size_t len);
