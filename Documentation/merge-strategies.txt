@@ -39,8 +39,7 @@ even look at what the other tree contains at all.  It discards everything
 the other tree did, declaring 'our' history contains all that happened in it.
 
 theirs;;
-	This is the opposite of 'ours'; note that, unlike 'ours', there is
-	no 'theirs' merge stragegy to confuse this merge option with.
+	This is the opposite of 'ours'.
 
 patience;;
 	With this option, 'merge-recursive' spends a little extra time
@@ -58,12 +57,11 @@ diff-algorithm=[patience|minimal|histogram|myers];;
 ignore-space-change;;
 ignore-all-space;;
 ignore-space-at-eol;;
-ignore-cr-at-eol;;
 	Treats lines with the indicated type of whitespace change as
 	unchanged for the sake of a three-way merge.  Whitespace
 	changes mixed with other changes to a line are not ignored.
-	See also linkgit:git-diff[1] `-b`, `-w`,
-	`--ignore-space-at-eol`, and `--ignore-cr-at-eol`.
+	See also linkgit:git-diff[1] `-b`, `-w`, and
+	`--ignore-space-at-eol`.
 +
 * If 'their' version only introduces whitespace changes to a line,
   'our' version is used;
@@ -83,17 +81,9 @@ no-renormalize;;
 	Disables the `renormalize` option.  This overrides the
 	`merge.renormalize` configuration variable.
 
-no-renames;;
-	Turn off rename detection.
-	See also linkgit:git-diff[1] `--no-renames`.
-
-find-renames[=<n>];;
-	Turn on rename detection, optionally setting the similarity
-	threshold.  This is the default.
-	See also linkgit:git-diff[1] `--find-renames`.
-
 rename-threshold=<n>;;
-	Deprecated synonym for `find-renames=<n>`.
+	Controls the similarity threshold used for rename detection.
+	See also linkgit:git-diff[1] `-M`.
 
 subtree[=<path>];;
 	This option is a more advanced form of 'subtree' strategy, where

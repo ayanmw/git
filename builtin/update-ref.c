@@ -1,5 +1,4 @@
 #include "cache.h"
-#include "config.h"
 #include "refs.h"
 #include "builtin.h"
 #include "parse-options.h"
@@ -15,7 +14,6 @@ static const char * const git_update_ref_usage[] = {
 
 static char line_termination = '\n';
 static int update_flags;
-static unsigned create_reflog_flag;
 static const char *msg;
 
 /*
@@ -94,10 +92,10 @@ static char *parse_refname(struct strbuf *input, const char **next)
  * provided but cannot be converted to a SHA-1, die.  flags can
  * include PARSE_SHA1_OLD and/or PARSE_SHA1_ALLOW_EMPTY.
  */
-static int parse_next_oid(struct strbuf *input, const char **next,
-			  struct object_id *oid,
-			  const char *command, const char *refname,
-			  int flags)
+static int parse_next_sha1(struct strbuf *input, const char **next,
+			   unsigned char *sha1,
+			   const char *command, const char *refname,
+			   int flags)
 {
 	struct strbuf arg = STRBUF_INIT;
 	int ret = 0;
@@ -115,11 +113,11 @@ static int parse_next_oid(struct strbuf *input, const char **next,
 		(*next)++;
 		*next = parse_arg(*next, &arg);
 		if (arg.len) {
-			if (get_oid(arg.buf, oid))
+			if (get_sha1(arg.buf, sha1))
 				goto invalid;
 		} else {
 			/* Without -z, an empty value means all zeros: */
-			oidclr(oid);
+			hashclr(sha1);
 		}
 	} else {
 		/* With -z, read the next NUL-terminated line */
@@ -133,13 +131,13 @@ static int parse_next_oid(struct strbuf *input, const char **next,
 		*next += arg.len;
 
 		if (arg.len) {
-			if (get_oid(arg.buf, oid))
+			if (get_sha1(arg.buf, sha1))
 				goto invalid;
 		} else if (flags & PARSE_SHA1_ALLOW_EMPTY) {
 			/* With -z, treat an empty value as all zeros: */
 			warning("%s %s: missing <newvalue>, treating as zero",
 				command, refname);
-			oidclr(oid);
+			hashclr(sha1);
 		} else {
 			/*
 			 * With -z, an empty non-required value means
@@ -182,27 +180,27 @@ static const char *parse_cmd_update(struct ref_transaction *transaction,
 {
 	struct strbuf err = STRBUF_INIT;
 	char *refname;
-	struct object_id new_oid, old_oid;
+	unsigned char new_sha1[20];
+	unsigned char old_sha1[20];
 	int have_old;
 
 	refname = parse_refname(input, &next);
 	if (!refname)
 		die("update: missing <ref>");
 
-	if (parse_next_oid(input, &next, &new_oid, "update", refname,
-			   PARSE_SHA1_ALLOW_EMPTY))
+	if (parse_next_sha1(input, &next, new_sha1, "update", refname,
+			    PARSE_SHA1_ALLOW_EMPTY))
 		die("update %s: missing <newvalue>", refname);
 
-	have_old = !parse_next_oid(input, &next, &old_oid, "update", refname,
-				   PARSE_SHA1_OLD);
+	have_old = !parse_next_sha1(input, &next, old_sha1, "update", refname,
+				    PARSE_SHA1_OLD);
 
 	if (*next != line_termination)
 		die("update %s: extra input: %s", refname, next);
 
 	if (ref_transaction_update(transaction, refname,
-				   &new_oid, have_old ? &old_oid : NULL,
-				   update_flags | create_reflog_flag,
-				   msg, &err))
+				   new_sha1, have_old ? old_sha1 : NULL,
+				   update_flags, msg, &err))
 		die("%s", err.buf);
 
 	update_flags = 0;
@@ -217,24 +215,23 @@ static const char *parse_cmd_create(struct ref_transaction *transaction,
 {
 	struct strbuf err = STRBUF_INIT;
 	char *refname;
-	struct object_id new_oid;
+	unsigned char new_sha1[20];
 
 	refname = parse_refname(input, &next);
 	if (!refname)
 		die("create: missing <ref>");
 
-	if (parse_next_oid(input, &next, &new_oid, "create", refname, 0))
+	if (parse_next_sha1(input, &next, new_sha1, "create", refname, 0))
 		die("create %s: missing <newvalue>", refname);
 
-	if (is_null_oid(&new_oid))
+	if (is_null_sha1(new_sha1))
 		die("create %s: zero <newvalue>", refname);
 
 	if (*next != line_termination)
 		die("create %s: extra input: %s", refname, next);
 
-	if (ref_transaction_create(transaction, refname, &new_oid,
-				   update_flags | create_reflog_flag,
-				   msg, &err))
+	if (ref_transaction_create(transaction, refname, new_sha1,
+				   update_flags, msg, &err))
 		die("%s", err.buf);
 
 	update_flags = 0;
@@ -249,18 +246,18 @@ static const char *parse_cmd_delete(struct ref_transaction *transaction,
 {
 	struct strbuf err = STRBUF_INIT;
 	char *refname;
-	struct object_id old_oid;
+	unsigned char old_sha1[20];
 	int have_old;
 
 	refname = parse_refname(input, &next);
 	if (!refname)
 		die("delete: missing <ref>");
 
-	if (parse_next_oid(input, &next, &old_oid, "delete", refname,
-			   PARSE_SHA1_OLD)) {
+	if (parse_next_sha1(input, &next, old_sha1, "delete", refname,
+			    PARSE_SHA1_OLD)) {
 		have_old = 0;
 	} else {
-		if (is_null_oid(&old_oid))
+		if (is_null_sha1(old_sha1))
 			die("delete %s: zero <oldvalue>", refname);
 		have_old = 1;
 	}
@@ -269,7 +266,7 @@ static const char *parse_cmd_delete(struct ref_transaction *transaction,
 		die("delete %s: extra input: %s", refname, next);
 
 	if (ref_transaction_delete(transaction, refname,
-				   have_old ? &old_oid : NULL,
+				   have_old ? old_sha1 : NULL,
 				   update_flags, msg, &err))
 		die("%s", err.buf);
 
@@ -285,20 +282,20 @@ static const char *parse_cmd_verify(struct ref_transaction *transaction,
 {
 	struct strbuf err = STRBUF_INIT;
 	char *refname;
-	struct object_id old_oid;
+	unsigned char old_sha1[20];
 
 	refname = parse_refname(input, &next);
 	if (!refname)
 		die("verify: missing <ref>");
 
-	if (parse_next_oid(input, &next, &old_oid, "verify", refname,
-			   PARSE_SHA1_OLD))
-		oidclr(&old_oid);
+	if (parse_next_sha1(input, &next, old_sha1, "verify", refname,
+			    PARSE_SHA1_OLD))
+		hashclr(old_sha1);
 
 	if (*next != line_termination)
 		die("verify %s: extra input: %s", refname, next);
 
-	if (ref_transaction_verify(transaction, refname, &old_oid,
+	if (ref_transaction_verify(transaction, refname, old_sha1,
 				   update_flags, &err))
 		die("%s", err.buf);
 
@@ -312,7 +309,7 @@ static const char *parse_cmd_verify(struct ref_transaction *transaction,
 static const char *parse_cmd_option(struct strbuf *input, const char *next)
 {
 	if (!strncmp(next, "no-deref", 8) && next[8] == line_termination)
-		update_flags |= REF_NO_DEREF;
+		update_flags |= REF_NODEREF;
 	else
 		die("option unknown: %s", next);
 	return next + 8;
@@ -354,10 +351,9 @@ static void update_refs_stdin(struct ref_transaction *transaction)
 int cmd_update_ref(int argc, const char **argv, const char *prefix)
 {
 	const char *refname, *oldval;
-	struct object_id oid, oldoid;
+	unsigned char sha1[20], oldsha1[20];
 	int delete = 0, no_deref = 0, read_stdin = 0, end_null = 0;
 	unsigned int flags = 0;
-	int create_reflog = 0;
 	struct option options[] = {
 		OPT_STRING( 'm', NULL, &msg, N_("reason"), N_("reason of the update")),
 		OPT_BOOL('d', NULL, &delete, N_("delete the reference")),
@@ -365,7 +361,6 @@ int cmd_update_ref(int argc, const char **argv, const char *prefix)
 					N_("update <refname> not the one it points to")),
 		OPT_BOOL('z', NULL, &end_null, N_("stdin has NUL-terminated arguments")),
 		OPT_BOOL( 0 , "stdin", &read_stdin, N_("read updates from stdin")),
-		OPT_BOOL( 0 , "create-reflog", &create_reflog, N_("create a reflog")),
 		OPT_END(),
 	};
 
@@ -374,8 +369,6 @@ int cmd_update_ref(int argc, const char **argv, const char *prefix)
 			     0);
 	if (msg && !*msg)
 		die("Refusing to perform update with empty message.");
-
-	create_reflog_flag = create_reflog ? REF_FORCE_CREATE_REFLOG : 0;
 
 	if (read_stdin) {
 		struct strbuf err = STRBUF_INIT;
@@ -411,33 +404,19 @@ int cmd_update_ref(int argc, const char **argv, const char *prefix)
 		refname = argv[0];
 		value = argv[1];
 		oldval = argv[2];
-		if (get_oid(value, &oid))
+		if (get_sha1(value, sha1))
 			die("%s: not a valid SHA1", value);
 	}
 
-	if (oldval) {
-		if (!*oldval)
-			/*
-			 * The empty string implies that the reference
-			 * must not already exist:
-			 */
-			oidclr(&oldoid);
-		else if (get_oid(oldval, &oldoid))
-			die("%s: not a valid old SHA1", oldval);
-	}
+	hashclr(oldsha1); /* all-zero hash in case oldval is the empty string */
+	if (oldval && *oldval && get_sha1(oldval, oldsha1))
+		die("%s: not a valid old SHA1", oldval);
 
 	if (no_deref)
-		flags = REF_NO_DEREF;
+		flags = REF_NODEREF;
 	if (delete)
-		/*
-		 * For purposes of backwards compatibility, we treat
-		 * NULL_SHA1 as "don't care" here:
-		 */
-		return delete_ref(msg, refname,
-				  (oldval && !is_null_oid(&oldoid)) ? &oldoid : NULL,
-				  flags);
+		return delete_ref(refname, oldval ? oldsha1 : NULL, flags);
 	else
-		return update_ref(msg, refname, &oid, oldval ? &oldoid : NULL,
-				  flags | create_reflog_flag,
-				  UPDATE_REFS_DIE_ON_ERR);
+		return update_ref(msg, refname, sha1, oldval ? oldsha1 : NULL,
+				  flags, UPDATE_REFS_DIE_ON_ERR);
 }

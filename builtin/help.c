@@ -2,7 +2,6 @@
  * Builtin help command
  */
 #include "cache.h"
-#include "config.h"
 #include "builtin.h"
 #include "exec_cmd.h"
 #include "parse-options.h"
@@ -38,10 +37,8 @@ static int show_all = 0;
 static int show_guides = 0;
 static unsigned int colopts;
 static enum help_format help_format = HELP_FORMAT_NONE;
-static int exclude_guides;
 static struct option builtin_help_options[] = {
 	OPT_BOOL('a', "all", &show_all, N_("print all available commands")),
-	OPT_HIDDEN_BOOL(0, "exclude-guides", &exclude_guides, N_("exclude guides")),
 	OPT_BOOL('g', "guides", &show_guides, N_("print list of useful guides")),
 	OPT_SET_INT('m', "man", &help_format, N_("show man page"), HELP_FORMAT_MAN),
 	OPT_SET_INT('w', "web", &help_format, N_("show manual in web browser"),
@@ -130,8 +127,7 @@ static void exec_woman_emacs(const char *path, const char *page)
 			path = "emacsclient";
 		strbuf_addf(&man_page, "(woman \"%s\")", page);
 		execlp(path, "emacsclient", "-e", man_page.buf, (char *)NULL);
-		warning_errno(_("failed to exec '%s'"), path);
-		strbuf_release(&man_page);
+		warning(_("failed to exec '%s': %s"), path, strerror(errno));
 	}
 }
 
@@ -144,16 +140,22 @@ static void exec_man_konqueror(const char *path, const char *page)
 
 		/* It's simpler to launch konqueror using kfmclient. */
 		if (path) {
-			size_t len;
-			if (strip_suffix(path, "/konqueror", &len))
-				path = xstrfmt("%.*s/kfmclient", (int)len, path);
-			filename = basename((char *)path);
+			const char *file = strrchr(path, '/');
+			if (file && !strcmp(file + 1, "konqueror")) {
+				char *new = xstrdup(path);
+				char *dest = strrchr(new, '/');
+
+				/* strlen("konqueror") == strlen("kfmclient") */
+				strcpy(dest + 1, "kfmclient");
+				path = new;
+			}
+			if (file)
+				filename = file;
 		} else
 			path = "kfmclient";
 		strbuf_addf(&man_page, "man:%s(1)", page);
 		execlp(path, filename, "newTab", man_page.buf, (char *)NULL);
-		warning_errno(_("failed to exec '%s'"), path);
-		strbuf_release(&man_page);
+		warning(_("failed to exec '%s': %s"), path, strerror(errno));
 	}
 }
 
@@ -162,7 +164,7 @@ static void exec_man_man(const char *path, const char *page)
 	if (!path)
 		path = "man";
 	execlp(path, "man", page, (char *)NULL);
-	warning_errno(_("failed to exec '%s'"), path);
+	warning(_("failed to exec '%s': %s"), path, strerror(errno));
 }
 
 static void exec_man_cmd(const char *cmd, const char *page)
@@ -170,17 +172,18 @@ static void exec_man_cmd(const char *cmd, const char *page)
 	struct strbuf shell_cmd = STRBUF_INIT;
 	strbuf_addf(&shell_cmd, "%s %s", cmd, page);
 	execl(SHELL_PATH, SHELL_PATH, "-c", shell_cmd.buf, (char *)NULL);
-	warning(_("failed to exec '%s'"), cmd);
-	strbuf_release(&shell_cmd);
+	warning(_("failed to exec '%s': %s"), cmd, strerror(errno));
 }
 
 static void add_man_viewer(const char *name)
 {
 	struct man_viewer_list **p = &man_viewer_list;
+	size_t len = strlen(name);
 
 	while (*p)
 		p = &((*p)->next);
-	FLEX_ALLOC_STR(*p, name, name);
+	*p = xcalloc(1, (sizeof(**p) + len + 1));
+	strncpy((*p)->name, name, len);
 }
 
 static int supported_man_viewer(const char *name, size_t len)
@@ -194,11 +197,12 @@ static void do_add_man_viewer_info(const char *name,
 				   size_t len,
 				   const char *value)
 {
-	struct man_viewer_info_list *new_man_viewer;
-	FLEX_ALLOC_MEM(new_man_viewer, name, name, len);
-	new_man_viewer->info = xstrdup(value);
-	new_man_viewer->next = man_viewer_info_list;
-	man_viewer_info_list = new_man_viewer;
+	struct man_viewer_info_list *new = xcalloc(1, sizeof(*new) + len + 1);
+
+	strncpy(new->name, name, len);
+	new->info = xstrdup(value);
+	new->next = man_viewer_info_list;
+	man_viewer_info_list = new;
 }
 
 static int add_man_viewer_path(const char *name,
@@ -291,6 +295,16 @@ static int is_git_command(const char *s)
 		is_in_cmdlist(&other_cmds, s);
 }
 
+static const char *prepend(const char *prefix, const char *cmd)
+{
+	size_t pre_len = strlen(prefix);
+	size_t cmd_len = strlen(cmd);
+	char *p = xmalloc(pre_len + cmd_len + 1);
+	memcpy(p, prefix, pre_len);
+	strcpy(p + pre_len, cmd);
+	return p;
+}
+
 static const char *cmd_to_page(const char *git_cmd)
 {
 	if (!git_cmd)
@@ -298,9 +312,9 @@ static const char *cmd_to_page(const char *git_cmd)
 	else if (starts_with(git_cmd, "git"))
 		return git_cmd;
 	else if (is_git_command(git_cmd))
-		return xstrfmt("git-%s", git_cmd);
+		return prepend("git-", git_cmd);
 	else
-		return xstrfmt("git%s", git_cmd);
+		return prepend("git", git_cmd);
 }
 
 static void setup_man_path(void)
@@ -385,10 +399,17 @@ static void get_html_page_path(struct strbuf *page_path, const char *page)
 	free(to_free);
 }
 
+/*
+ * If open_html is not defined in a platform-specific way (see for
+ * example compat/mingw.h), we use the script web--browse to display
+ * HTML.
+ */
+#ifndef open_html
 static void open_html(const char *path)
 {
 	execl_git_cmd("web--browse", "-c", "help.browser", path, (char *)NULL);
 }
+#endif
 
 static void show_html_page(const char *git_cmd)
 {
@@ -432,29 +453,10 @@ static void list_common_guides_help(void)
 	putchar('\n');
 }
 
-static const char *check_git_cmd(const char* cmd)
-{
-	char *alias;
-
-	if (is_git_command(cmd))
-		return cmd;
-
-	alias = alias_lookup(cmd);
-	if (alias) {
-		printf_ln(_("'%s' is aliased to '%s'"), cmd, alias);
-		free(alias);
-		exit(0);
-	}
-
-	if (exclude_guides)
-		return help_unknown_cmd(cmd);
-
-	return cmd;
-}
-
 int cmd_help(int argc, const char **argv, const char *prefix)
 {
 	int nongit;
+	char *alias;
 	enum help_format parsed_help_format;
 
 	argc = parse_options(argc, argv, prefix, builtin_help_options,
@@ -494,7 +496,12 @@ int cmd_help(int argc, const char **argv, const char *prefix)
 	if (help_format == HELP_FORMAT_NONE)
 		help_format = parse_help_format(DEFAULT_HELP_FORMAT);
 
-	argv[0] = check_git_cmd(argv[0]);
+	alias = alias_lookup(argv[0]);
+	if (alias && !is_git_command(argv[0])) {
+		printf_ln(_("`git %s' is aliased to `%s'"), argv[0], alias);
+		free(alias);
+		return 0;
+	}
 
 	switch (help_format) {
 	case HELP_FORMAT_NONE:

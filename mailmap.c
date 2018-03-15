@@ -103,8 +103,10 @@ static void add_mapping(struct string_list *map,
 	} else {
 		struct mailmap_info *mi = xcalloc(1, sizeof(struct mailmap_info));
 		debug_mm("mailmap: adding (complex) entry for '%s'\n", old_email);
-		mi->name = xstrdup_or_null(new_name);
-		mi->email = xstrdup_or_null(new_email);
+		if (new_name)
+			mi->name = xstrdup(new_name);
+		if (new_email)
+			mi->email = xstrdup(new_email);
 		string_list_insert(&me->namemap, old_name)->util = mi;
 	}
 
@@ -160,10 +162,11 @@ static void read_mailmap_line(struct string_list *map, char *buffer,
 			char *cp;
 
 			free(*repo_abbrev);
+			*repo_abbrev = xmalloc(len);
 
 			for (cp = buffer + abblen; isspace(*cp); cp++)
 				; /* nothing */
-			*repo_abbrev = xstrdup(cp);
+			strcpy(*repo_abbrev, cp);
 		}
 		return;
 	}
@@ -187,7 +190,8 @@ static int read_mailmap_file(struct string_list *map, const char *filename,
 	if (!f) {
 		if (errno == ENOENT)
 			return 0;
-		return error_errno("unable to open mailmap at %s", filename);
+		return error("unable to open mailmap at %s: %s",
+			     filename, strerror(errno));
 	}
 
 	while (fgets(buffer, sizeof(buffer), f) != NULL)
@@ -214,17 +218,17 @@ static int read_mailmap_blob(struct string_list *map,
 			     const char *name,
 			     char **repo_abbrev)
 {
-	struct object_id oid;
+	unsigned char sha1[20];
 	char *buf;
 	unsigned long size;
 	enum object_type type;
 
 	if (!name)
 		return 0;
-	if (get_oid(name, &oid) < 0)
+	if (get_sha1(name, sha1) < 0)
 		return 0;
 
-	buf = read_sha1_file(oid.hash, &type, &size);
+	buf = read_sha1_file(sha1, &type, &size);
 	if (!buf)
 		return error("unable to read mailmap object at %s", name);
 	if (type != OBJ_BLOB)
@@ -247,8 +251,7 @@ int read_mailmap(struct string_list *map, char **repo_abbrev)
 		git_mailmap_blob = "HEAD:.mailmap";
 
 	err |= read_mailmap_file(map, ".mailmap", repo_abbrev);
-	if (startup_info->have_repository)
-		err |= read_mailmap_blob(map, git_mailmap_blob, repo_abbrev);
+	err |= read_mailmap_blob(map, git_mailmap_blob, repo_abbrev);
 	err |= read_mailmap_file(map, git_mailmap_file, repo_abbrev);
 	return err;
 }

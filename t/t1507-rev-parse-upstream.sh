@@ -42,18 +42,15 @@ commit_subject () {
 
 error_message () {
 	(cd clone &&
-	 test_must_fail git rev-parse --verify "$@" 2>../error)
+	 test_must_fail git rev-parse --verify "$@")
 }
 
 test_expect_success '@{upstream} resolves to correct full name' '
-	test refs/remotes/origin/master = "$(full_name @{upstream})" &&
-	test refs/remotes/origin/master = "$(full_name @{UPSTREAM})" &&
-	test refs/remotes/origin/master = "$(full_name @{UpSTReam})"
+	test refs/remotes/origin/master = "$(full_name @{upstream})"
 '
 
 test_expect_success '@{u} resolves to correct full name' '
-	test refs/remotes/origin/master = "$(full_name @{u})" &&
-	test refs/remotes/origin/master = "$(full_name @{U})"
+	test refs/remotes/origin/master = "$(full_name @{u})"
 '
 
 test_expect_success 'my-side@{upstream} resolves to correct full name' '
@@ -63,8 +60,6 @@ test_expect_success 'my-side@{upstream} resolves to correct full name' '
 test_expect_success 'upstream of branch with @ in middle' '
 	full_name fun@ny@{u} >actual &&
 	echo refs/remotes/origin/side >expect &&
-	test_cmp expect actual &&
-	full_name fun@ny@{U} >actual &&
 	test_cmp expect actual
 '
 
@@ -101,14 +96,12 @@ test_expect_success 'not-tracking@{u} fails' '
 test_expect_success '<branch>@{u}@{1} resolves correctly' '
 	test_commit 6 &&
 	(cd clone && git fetch) &&
-	test 5 = $(commit_subject my-side@{u}@{1}) &&
-	test 5 = $(commit_subject my-side@{U}@{1})
+	test 5 = $(commit_subject my-side@{u}@{1})
 '
 
 test_expect_success '@{u} without specifying branch fails on a detached HEAD' '
 	git checkout HEAD^0 &&
-	test_must_fail git rev-parse @{u} &&
-	test_must_fail git rev-parse @{U}
+	test_must_fail git rev-parse @{u}
 '
 
 test_expect_success 'checkout -b new my-side@{u} forks from the same' '
@@ -157,15 +150,15 @@ test_expect_success 'branch@{u} works when tracking a local branch' '
 
 test_expect_success 'branch@{u} error message when no upstream' '
 	cat >expect <<-EOF &&
-	fatal: no upstream configured for branch ${sq}non-tracking${sq}
+	fatal: No upstream configured for branch ${sq}non-tracking${sq}
 	EOF
-	error_message non-tracking@{u} &&
-	test_i18ncmp expect error
+	error_message non-tracking@{u} 2>actual &&
+	test_i18ncmp expect actual
 '
 
 test_expect_success '@{u} error message when no upstream' '
 	cat >expect <<-EOF &&
-	fatal: no upstream configured for branch ${sq}master${sq}
+	fatal: No upstream configured for branch ${sq}master${sq}
 	EOF
 	test_must_fail git rev-parse --verify @{u} 2>actual &&
 	test_i18ncmp expect actual
@@ -173,10 +166,10 @@ test_expect_success '@{u} error message when no upstream' '
 
 test_expect_success 'branch@{u} error message with misspelt branch' '
 	cat >expect <<-EOF &&
-	fatal: no such branch: ${sq}no-such-branch${sq}
+	fatal: No such branch: ${sq}no-such-branch${sq}
 	EOF
-	error_message no-such-branch@{u} &&
-	test_i18ncmp expect error
+	error_message no-such-branch@{u} 2>actual &&
+	test_i18ncmp expect actual
 '
 
 test_expect_success '@{u} error message when not on a branch' '
@@ -190,10 +183,10 @@ test_expect_success '@{u} error message when not on a branch' '
 
 test_expect_success 'branch@{u} error message if upstream branch not fetched' '
 	cat >expect <<-EOF &&
-	fatal: upstream branch ${sq}refs/heads/side${sq} not stored as a remote-tracking branch
+	fatal: Upstream branch ${sq}refs/heads/side${sq} not stored as a remote-tracking branch
 	EOF
-	error_message bad-upstream@{u} &&
-	test_i18ncmp expect error
+	error_message bad-upstream@{u} 2>actual &&
+	test_i18ncmp expect actual
 '
 
 test_expect_success 'pull works when tracking a local branch' '

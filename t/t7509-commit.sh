@@ -90,10 +90,22 @@ sha1_file() {
 remove_object() {
 	rm -f $(sha1_file "$*")
 }
+no_reflog() {
+	cp .git/config .git/config.saved &&
+	echo "[core] logallrefupdates = false" >>.git/config &&
+	test_when_finished "mv -f .git/config.saved .git/config" &&
+
+	if test -e .git/logs
+	then
+		mv .git/logs . &&
+		test_when_finished "mv logs .git/"
+	fi
+}
 
 test_expect_success '--amend option with empty author' '
 	git cat-file commit Initial >tmp &&
 	sed "s/author [^<]* </author  </" tmp >empty-author &&
+	no_reflog &&
 	sha=$(git hash-object -t commit -w empty-author) &&
 	test_when_finished "remove_object $sha" &&
 	git checkout $sha &&
@@ -101,12 +113,13 @@ test_expect_success '--amend option with empty author' '
 	echo "Empty author test" >>foo &&
 	test_tick &&
 	test_must_fail git commit -a -m "empty author" --amend 2>err &&
-	test_i18ngrep "empty ident" err
+	grep "empty ident" err
 '
 
 test_expect_success '--amend option with missing author' '
 	git cat-file commit Initial >tmp &&
 	sed "s/author [^<]* </author </" tmp >malformed &&
+	no_reflog &&
 	sha=$(git hash-object -t commit -w malformed) &&
 	test_when_finished "remove_object $sha" &&
 	git checkout $sha &&
@@ -114,7 +127,7 @@ test_expect_success '--amend option with missing author' '
 	echo "Missing author test" >>foo &&
 	test_tick &&
 	test_must_fail git commit -a -m "malformed author" --amend 2>err &&
-	test_i18ngrep "empty ident" err
+	grep "empty ident" err
 '
 
 test_expect_success '--reset-author makes the commit ours even with --amend option' '

@@ -2,6 +2,12 @@
 
 test_description='test git-http-backend'
 . ./test-lib.sh
+
+if test -n "$NO_CURL"; then
+	skip_all='skipping test, git built without http support'
+	test_done
+fi
+
 . "$TEST_DIRECTORY"/lib-httpd.sh
 start_httpd
 
@@ -29,9 +35,15 @@ POST() {
 	test_cmp exp act
 }
 
+log_div() {
+	echo >>"$HTTPD_ROOT_PATH"/access.log
+	echo "###  $1" >>"$HTTPD_ROOT_PATH"/access.log
+	echo "###" >>"$HTTPD_ROOT_PATH"/access.log
+}
+
 . "$TEST_DIRECTORY"/t556x_common
 
-grep '^[^#]' >exp <<EOF
+cat >exp <<EOF
 
 ###  refs/heads/master
 ###

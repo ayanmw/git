@@ -1,12 +1,10 @@
 #ifndef BUNDLE_H
 #define BUNDLE_H
 
-#include "cache.h"
-
 struct ref_list {
 	unsigned int nr, alloc;
 	struct ref_list_entry {
-		struct object_id oid;
+		unsigned char sha1[20];
 		char *name;
 	} *list;
 };

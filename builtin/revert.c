@@ -1,5 +1,4 @@
 #include "cache.h"
-#include "config.h"
 #include "builtin.h"
 #include "parse-options.h"
 #include "diff.h"
@@ -55,24 +54,6 @@ static int option_parse_x(const struct option *opt,
 	return 0;
 }
 
-static int option_parse_m(const struct option *opt,
-			  const char *arg, int unset)
-{
-	struct replay_opts *replay = opt->value;
-	char *end;
-
-	if (unset) {
-		replay->mainline = 0;
-		return 0;
-	}
-
-	replay->mainline = strtol(arg, &end, 10);
-	if (*end || replay->mainline <= 0)
-		return opterror(opt, "expects a number greater than zero", 0);
-
-	return 0;
-}
-
 LAST_ARG_MUST_BE_NULL
 static void verify_opt_compatible(const char *me, const char *base_opt, ...)
 {
@@ -90,12 +71,12 @@ static void verify_opt_compatible(const char *me, const char *base_opt, ...)
 		die(_("%s: %s cannot be used with %s"), me, this_opt, base_opt);
 }
 
-static int run_sequencer(int argc, const char **argv, struct replay_opts *opts)
+static void parse_args(int argc, const char **argv, struct replay_opts *opts)
 {
 	const char * const * usage_str = revert_or_cherry_pick_usage(opts);
 	const char *me = action_name(opts);
 	int cmd = 0;
-	struct option base_options[] = {
+	struct option options[] = {
 		OPT_CMDMODE(0, "quit", &cmd, N_("end revert or cherry-pick sequence"), 'q'),
 		OPT_CMDMODE(0, "continue", &cmd, N_("resume revert or cherry-pick sequence"), 'c'),
 		OPT_CMDMODE(0, "abort", &cmd, N_("cancel revert or cherry-pick sequence"), 'a'),
@@ -103,17 +84,20 @@ static int run_sequencer(int argc, const char **argv, struct replay_opts *opts)
 		OPT_BOOL('e', "edit", &opts->edit, N_("edit the commit message")),
 		OPT_NOOP_NOARG('r', NULL),
 		OPT_BOOL('s', "signoff", &opts->signoff, N_("add Signed-off-by:")),
-		OPT_CALLBACK('m', "mainline", opts, N_("parent-number"),
-			     N_("select mainline parent"), option_parse_m),
+		OPT_INTEGER('m', "mainline", &opts->mainline, N_("parent number")),
 		OPT_RERERE_AUTOUPDATE(&opts->allow_rerere_auto),
 		OPT_STRING(0, "strategy", &opts->strategy, N_("strategy"), N_("merge strategy")),
 		OPT_CALLBACK('X', "strategy-option", &opts, N_("option"),
 			N_("option for merge strategy"), option_parse_x),
 		{ OPTION_STRING, 'S', "gpg-sign", &opts->gpg_sign, N_("key-id"),
 		  N_("GPG sign commit"), PARSE_OPT_OPTARG, NULL, (intptr_t) "" },
-		OPT_END()
+		OPT_END(),
+		OPT_END(),
+		OPT_END(),
+		OPT_END(),
+		OPT_END(),
+		OPT_END(),
 	};
-	struct option *options = base_options;
 
 	if (opts->action == REPLAY_PICK) {
 		struct option cp_extra[] = {
@@ -124,7 +108,8 @@ static int run_sequencer(int argc, const char **argv, struct replay_opts *opts)
 			OPT_BOOL(0, "keep-redundant-commits", &opts->keep_redundant_commits, N_("keep redundant, empty commits")),
 			OPT_END(),
 		};
-		options = parse_options_concat(options, cp_extra);
+		if (parse_options_concat(options, ARRAY_SIZE(options), cp_extra))
+			die(_("program error"));
 	}
 
 	argc = parse_options(argc, argv, NULL, options, usage_str,
@@ -135,15 +120,25 @@ static int run_sequencer(int argc, const char **argv, struct replay_opts *opts)
 	if (opts->keep_redundant_commits)
 		opts->allow_empty = 1;
 
+	/* Set the subcommand */
+	if (cmd == 'q')
+		opts->subcommand = REPLAY_REMOVE_STATE;
+	else if (cmd == 'c')
+		opts->subcommand = REPLAY_CONTINUE;
+	else if (cmd == 'a')
+		opts->subcommand = REPLAY_ROLLBACK;
+	else
+		opts->subcommand = REPLAY_NONE;
+
 	/* Check for incompatible command line arguments */
-	if (cmd) {
+	if (opts->subcommand != REPLAY_NONE) {
 		char *this_operation;
-		if (cmd == 'q')
+		if (opts->subcommand == REPLAY_REMOVE_STATE)
 			this_operation = "--quit";
-		else if (cmd == 'c')
+		else if (opts->subcommand == REPLAY_CONTINUE)
 			this_operation = "--continue";
 		else {
-			assert(cmd == 'a');
+			assert(opts->subcommand == REPLAY_ROLLBACK);
 			this_operation = "--abort";
 		}
 
@@ -155,8 +150,6 @@ static int run_sequencer(int argc, const char **argv, struct replay_opts *opts)
 				"--strategy-option", opts->xopts ? 1 : 0,
 				"-x", opts->record_origin,
 				"--ff", opts->allow_ff,
-				"--rerere-autoupdate", opts->allow_rerere_auto == RERERE_AUTOUPDATE,
-				"--no-rerere-autoupdate", opts->allow_rerere_auto == RERERE_NOAUTOUPDATE,
 				NULL);
 	}
 
@@ -168,7 +161,7 @@ static int run_sequencer(int argc, const char **argv, struct replay_opts *opts)
 				"--edit", opts->edit,
 				NULL);
 
-	if (cmd) {
+	if (opts->subcommand != REPLAY_NONE) {
 		opts->revs = NULL;
 	} else {
 		struct setup_revision_opt s_r_opt;
@@ -186,30 +179,20 @@ static int run_sequencer(int argc, const char **argv, struct replay_opts *opts)
 
 	if (argc > 1)
 		usage_with_options(usage_str, options);
-
-	/* These option values will be free()d */
-	opts->gpg_sign = xstrdup_or_null(opts->gpg_sign);
-	opts->strategy = xstrdup_or_null(opts->strategy);
-
-	if (cmd == 'q')
-		return sequencer_remove_state(opts);
-	if (cmd == 'c')
-		return sequencer_continue(opts);
-	if (cmd == 'a')
-		return sequencer_rollback(opts);
-	return sequencer_pick_revisions(opts);
 }
 
 int cmd_revert(int argc, const char **argv, const char *prefix)
 {
-	struct replay_opts opts = REPLAY_OPTS_INIT;
+	struct replay_opts opts;
 	int res;
 
+	memset(&opts, 0, sizeof(opts));
 	if (isatty(0))
 		opts.edit = 1;
 	opts.action = REPLAY_REVERT;
-	sequencer_init_config(&opts);
-	res = run_sequencer(argc, argv, &opts);
+	git_config(git_default_config, NULL);
+	parse_args(argc, argv, &opts);
+	res = sequencer_pick_revisions(&opts);
 	if (res < 0)
 		die(_("revert failed"));
 	return res;
@@ -217,12 +200,14 @@ int cmd_revert(int argc, const char **argv, const char *prefix)
 
 int cmd_cherry_pick(int argc, const char **argv, const char *prefix)
 {
-	struct replay_opts opts = REPLAY_OPTS_INIT;
+	struct replay_opts opts;
 	int res;
 
+	memset(&opts, 0, sizeof(opts));
 	opts.action = REPLAY_PICK;
-	sequencer_init_config(&opts);
-	res = run_sequencer(argc, argv, &opts);
+	git_config(git_default_config, NULL);
+	parse_args(argc, argv, &opts);
+	res = sequencer_pick_revisions(&opts);
 	if (res < 0)
 		die(_("cherry-pick failed"));
 	return res;

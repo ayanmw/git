@@ -56,13 +56,11 @@ get_remote_merge_branch () {
 error_on_missing_default_upstream () {
 	cmd="$1"
 	op_type="$2"
-	op_prep="$3" # FIXME: op_prep is no longer used
+	op_prep="$3"
 	example="$4"
 	branch_name=$(git symbolic-ref -q HEAD)
-	display_branch_name="${branch_name#refs/heads/}"
 	# If there's only one remote, use that in the suggestion
-	remote="$(gettext "<remote>")"
-	branch="$(gettext "<branch>")"
+	remote="<remote>"
 	if test $(git remote | wc -l) = 1
 	then
 		remote=$(git remote)
@@ -70,32 +68,22 @@ error_on_missing_default_upstream () {
 
 	if test -z "$branch_name"
 	then
-		gettextln "You are not currently on a branch."
+		echo "You are not currently on a branch. Please specify which
+branch you want to $op_type $op_prep. See git-${cmd}(1) for details.
+
+    $example
+"
 	else
-		gettextln "There is no tracking information for the current branch."
-	fi
-	case "$op_type" in
-	rebase)
-		gettextln "Please specify which branch you want to rebase against."
-		;;
-	merge)
-		gettextln "Please specify which branch you want to merge with."
-		;;
-	*)
-		echo >&2 "BUG: unknown operation type: $op_type"
-		exit 1
-		;;
-	esac
-	eval_gettextln "See git-\${cmd}(1) for details."
-	echo
-	echo "    $example"
-	echo
-	if test -n "$branch_name"
-	then
-		gettextln "If you wish to set tracking information for this branch you can do so with:"
-		echo
-		echo "    git branch --set-upstream-to=$remote/$branch $display_branch_name"
-		echo
+		echo "There is no tracking information for the current branch.
+Please specify which branch you want to $op_type $op_prep.
+See git-${cmd}(1) for details
+
+    $example
+
+If you wish to set tracking information for this branch you can do so with:
+
+    git branch --set-upstream-to=$remote/<branch> ${branch_name#refs/heads/}
+"
 	fi
 	exit 1
 }

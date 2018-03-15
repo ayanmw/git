@@ -14,7 +14,8 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, see <http://www.gnu.org/licenses/>.
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  */
 #include "git-compat-util.h"
 #include "ewok.h"
@@ -38,7 +39,8 @@ static inline void buffer_grow(struct ewah_bitmap *self, size_t new_size)
 		return;
 
 	self->alloc_size = new_size;
-	REALLOC_ARRAY(self->buffer, self->alloc_size);
+	self->buffer = ewah_realloc(self->buffer,
+		self->alloc_size * sizeof(eword_t));
 	self->rlw = self->buffer + (rlw_offset / sizeof(eword_t));
 }
 
@@ -100,7 +102,7 @@ size_t ewah_add_empty_words(struct ewah_bitmap *self, int v, size_t number)
 	if (number == 0)
 		return 0;
 
-	self->bit_size += number * BITS_IN_EWORD;
+	self->bit_size += number * BITS_IN_WORD;
 	return add_empty_words(self, v, number);
 }
 
@@ -150,7 +152,7 @@ void ewah_add_dirty_words(
 			self->buffer_size += can_add;
 		}
 
-		self->bit_size += can_add * BITS_IN_EWORD;
+		self->bit_size += can_add * BITS_IN_WORD;
 
 		if (number - can_add == 0)
 			break;
@@ -195,7 +197,7 @@ static size_t add_empty_word(struct ewah_bitmap *self, int v)
 
 size_t ewah_add(struct ewah_bitmap *self, eword_t word)
 {
-	self->bit_size += BITS_IN_EWORD;
+	self->bit_size += BITS_IN_WORD;
 
 	if (word == 0)
 		return add_empty_word(self, 0);
@@ -209,8 +211,8 @@ size_t ewah_add(struct ewah_bitmap *self, eword_t word)
 void ewah_set(struct ewah_bitmap *self, size_t i)
 {
 	const size_t dist =
-		DIV_ROUND_UP(i + 1, BITS_IN_EWORD) -
-		DIV_ROUND_UP(self->bit_size, BITS_IN_EWORD);
+		(i + BITS_IN_WORD) / BITS_IN_WORD -
+		(self->bit_size + BITS_IN_WORD - 1) / BITS_IN_WORD;
 
 	assert(i >= self->bit_size);
 
@@ -220,19 +222,19 @@ void ewah_set(struct ewah_bitmap *self, size_t i)
 		if (dist > 1)
 			add_empty_words(self, 0, dist - 1);
 
-		add_literal(self, (eword_t)1 << (i % BITS_IN_EWORD));
+		add_literal(self, (eword_t)1 << (i % BITS_IN_WORD));
 		return;
 	}
 
 	if (rlw_get_literal_words(self->rlw) == 0) {
 		rlw_set_running_len(self->rlw,
 			rlw_get_running_len(self->rlw) - 1);
-		add_literal(self, (eword_t)1 << (i % BITS_IN_EWORD));
+		add_literal(self, (eword_t)1 << (i % BITS_IN_WORD));
 		return;
 	}
 
 	self->buffer[self->buffer_size - 1] |=
-		((eword_t)1 << (i % BITS_IN_EWORD));
+		((eword_t)1 << (i % BITS_IN_WORD));
 
 	/* check if we just completed a stream of 1s */
 	if (self->buffer[self->buffer_size - 1] == (eword_t)(~0)) {
@@ -253,11 +255,11 @@ void ewah_each_bit(struct ewah_bitmap *self, void (*callback)(size_t, void*), vo
 		eword_t *word = &self->buffer[pointer];
 
 		if (rlw_get_run_bit(word)) {
-			size_t len = rlw_get_running_len(word) * BITS_IN_EWORD;
+			size_t len = rlw_get_running_len(word) * BITS_IN_WORD;
 			for (k = 0; k < len; ++k, ++pos)
 				callback(pos, payload);
 		} else {
-			pos += rlw_get_running_len(word) * BITS_IN_EWORD;
+			pos += rlw_get_running_len(word) * BITS_IN_WORD;
 		}
 
 		++pointer;
@@ -266,7 +268,7 @@ void ewah_each_bit(struct ewah_bitmap *self, void (*callback)(size_t, void*), vo
 			int c;
 
 			/* todo: zero count optimization */
-			for (c = 0; c < BITS_IN_EWORD; ++c, ++pos) {
+			for (c = 0; c < BITS_IN_WORD; ++c, ++pos) {
 				if ((self->buffer[pointer] & ((eword_t)1 << c)) != 0)
 					callback(pos, payload);
 			}
@@ -280,9 +282,12 @@ struct ewah_bitmap *ewah_new(void)
 {
 	struct ewah_bitmap *self;
 
-	self = xmalloc(sizeof(struct ewah_bitmap));
+	self = ewah_malloc(sizeof(struct ewah_bitmap));
+	if (self == NULL)
+		return NULL;
+
+	self->buffer = ewah_malloc(32 * sizeof(eword_t));
 	self->alloc_size = 32;
-	ALLOC_ARRAY(self->buffer, self->alloc_size);
 
 	ewah_clear(self);
 	return self;

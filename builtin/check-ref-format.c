@@ -20,7 +20,7 @@ static const char builtin_check_ref_format_usage[] =
  */
 static char *collapse_slashes(const char *refname)
 {
-	char *ret = xmallocz(strlen(refname));
+	char *ret = xmalloc(strlen(refname) + 1);
 	char ch;
 	char prev = '/';
 	char *cp = ret;
@@ -39,15 +39,12 @@ static char *collapse_slashes(const char *refname)
 static int check_ref_format_branch(const char *arg)
 {
 	struct strbuf sb = STRBUF_INIT;
-	const char *name;
 	int nongit;
 
 	setup_git_directory_gently(&nongit);
-	if (strbuf_check_branch_ref(&sb, arg) ||
-	    !skip_prefix(sb.buf, "refs/heads/", &name))
+	if (strbuf_check_branch_ref(&sb, arg))
 		die("'%s' is not a valid branch name", arg);
-	printf("%s\n", name);
-	strbuf_release(&sb);
+	printf("%s\n", sb.buf + 11);
 	return 0;
 }
 

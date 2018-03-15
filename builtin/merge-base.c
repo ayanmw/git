@@ -1,6 +1,5 @@
 #include "builtin.h"
 #include "cache.h"
-#include "config.h"
 #include "commit.h"
 #include "refs.h"
 #include "diff.h"
@@ -9,20 +8,20 @@
 
 static int show_merge_base(struct commit **rev, int rev_nr, int show_all)
 {
-	struct commit_list *result, *r;
+	struct commit_list *result;
 
 	result = get_merge_bases_many_dirty(rev[0], rev_nr - 1, rev + 1);
 
 	if (!result)
 		return 1;
 
-	for (r = result; r; r = r->next) {
-		printf("%s\n", oid_to_hex(&r->item->object.oid));
+	while (result) {
+		printf("%s\n", sha1_to_hex(result->item->object.sha1));
 		if (!show_all)
-			break;
+			return 0;
+		result = result->next;
 	}
 
-	free_commit_list(result);
 	return 0;
 }
 
@@ -37,12 +36,12 @@ static const char * const merge_base_usage[] = {
 
 static struct commit *get_commit_reference(const char *arg)
 {
-	struct object_id revkey;
+	unsigned char revkey[20];
 	struct commit *r;
 
-	if (get_oid(arg, &revkey))
+	if (get_sha1(arg, revkey))
 		die("Not a valid object name %s", arg);
-	r = lookup_commit_reference(&revkey);
+	r = lookup_commit_reference(revkey);
 	if (!r)
 		die("Not a valid commit name %s", arg);
 
@@ -51,47 +50,45 @@ static struct commit *get_commit_reference(const char *arg)
 
 static int handle_independent(int count, const char **args)
 {
-	struct commit_list *revs = NULL, *rev;
+	struct commit_list *revs = NULL;
+	struct commit_list *result;
 	int i;
 
 	for (i = count - 1; i >= 0; i--)
 		commit_list_insert(get_commit_reference(args[i]), &revs);
 
-	reduce_heads_replace(&revs);
-
-	if (!revs)
+	result = reduce_heads(revs);
+	if (!result)
 		return 1;
 
-	for (rev = revs; rev; rev = rev->next)
-		printf("%s\n", oid_to_hex(&rev->item->object.oid));
-
-	free_commit_list(revs);
+	while (result) {
+		printf("%s\n", sha1_to_hex(result->item->object.sha1));
+		result = result->next;
+	}
 	return 0;
 }
 
 static int handle_octopus(int count, const char **args, int show_all)
 {
 	struct commit_list *revs = NULL;
-	struct commit_list *result, *rev;
+	struct commit_list *result;
 	int i;
 
 	for (i = count - 1; i >= 0; i--)
 		commit_list_insert(get_commit_reference(args[i]), &revs);
 
-	result = get_octopus_merge_bases(revs);
-	free_commit_list(revs);
-	reduce_heads_replace(&result);
+	result = reduce_heads(get_octopus_merge_bases(revs));
 
 	if (!result)
 		return 1;
 
-	for (rev = result; rev; rev = rev->next) {
-		printf("%s\n", oid_to_hex(&rev->item->object.oid));
+	while (result) {
+		printf("%s\n", sha1_to_hex(result->item->object.sha1));
 		if (!show_all)
-			break;
+			return 0;
+		result = result->next;
 	}
 
-	free_commit_list(result);
 	return 0;
 }
 
@@ -116,14 +113,14 @@ struct rev_collect {
 	unsigned int initial : 1;
 };
 
-static void add_one_commit(struct object_id *oid, struct rev_collect *revs)
+static void add_one_commit(unsigned char *sha1, struct rev_collect *revs)
 {
 	struct commit *commit;
 
-	if (is_null_oid(oid))
+	if (is_null_sha1(sha1))
 		return;
 
-	commit = lookup_commit(oid);
+	commit = lookup_commit(sha1);
 	if (!commit ||
 	    (commit->object.flags & TMP_MARK) ||
 	    parse_commit(commit))
@@ -134,23 +131,23 @@ static void add_one_commit(struct object_id *oid, struct rev_collect *revs)
 	commit->object.flags |= TMP_MARK;
 }
 
-static int collect_one_reflog_ent(struct object_id *ooid, struct object_id *noid,
-				  const char *ident, timestamp_t timestamp,
+static int collect_one_reflog_ent(unsigned char *osha1, unsigned char *nsha1,
+				  const char *ident, unsigned long timestamp,
 				  int tz, const char *message, void *cbdata)
 {
 	struct rev_collect *revs = cbdata;
 
 	if (revs->initial) {
 		revs->initial = 0;
-		add_one_commit(ooid, revs);
+		add_one_commit(osha1, revs);
 	}
-	add_one_commit(noid, revs);
+	add_one_commit(nsha1, revs);
 	return 0;
 }
 
 static int handle_fork_point(int argc, const char **argv)
 {
-	struct object_id oid;
+	unsigned char sha1[20];
 	char *refname;
 	const char *commitname;
 	struct rev_collect revs;
@@ -158,7 +155,7 @@ static int handle_fork_point(int argc, const char **argv)
 	struct commit_list *bases;
 	int i, ret = 0;
 
-	switch (dwim_ref(argv[0], strlen(argv[0]), &oid, &refname)) {
+	switch (dwim_ref(argv[0], strlen(argv[0]), sha1, &refname)) {
 	case 0:
 		die("No such ref: '%s'", argv[0]);
 	case 1:
@@ -168,16 +165,13 @@ static int handle_fork_point(int argc, const char **argv)
 	}
 
 	commitname = (argc == 2) ? argv[1] : "HEAD";
-	if (get_oid(commitname, &oid))
+	if (get_sha1(commitname, sha1))
 		die("Not a valid object name: '%s'", commitname);
 
-	derived = lookup_commit_reference(&oid);
+	derived = lookup_commit_reference(sha1);
 	memset(&revs, 0, sizeof(revs));
 	revs.initial = 1;
 	for_each_reflog_ent(refname, collect_one_reflog_ent, &revs);
-
-	if (!revs.nr && !get_oid(refname, &oid))
-		add_one_commit(&oid, &revs);
 
 	for (i = 0; i < revs.nr; i++)
 		revs.commit[i]->object.flags &= ~TMP_MARK;
@@ -202,7 +196,7 @@ static int handle_fork_point(int argc, const char **argv)
 		goto cleanup_return;
 	}
 
-	printf("%s\n", oid_to_hex(&bases->item->object.oid));
+	printf("%s\n", sha1_to_hex(bases->item->object.sha1));
 
 cleanup_return:
 	free_commit_list(bases);
@@ -258,7 +252,7 @@ int cmd_merge_base(int argc, const char **argv, const char *prefix)
 	if (argc < 2)
 		usage_with_options(merge_base_usage, options);
 
-	ALLOC_ARRAY(rev, argc);
+	rev = xmalloc(argc * sizeof(*rev));
 	while (argc-- > 0)
 		rev[rev_nr++] = get_commit_reference(*argv++);
 	return show_merge_base(rev, rev_nr, show_all);

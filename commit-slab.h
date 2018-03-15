@@ -8,20 +8,14 @@
  *
  * After including this header file, using:
  *
- * define_commit_slab(indegree, int);
+ * define_commit_slab(indegee, int);
  *
  * will let you call the following functions:
  *
  * - int *indegree_at(struct indegree *, struct commit *);
  *
  *   This function locates the data associated with the given commit in
- *   the indegree slab, and returns the pointer to it.  The location to
- *   store the data is allocated as necessary.
- *
- * - int *indegree_peek(struct indegree *, struct commit *);
- *
- *   This function is similar to indegree_at(), but it will return NULL
- *   until a call to indegree_at() was made for the commit.
+ *   the indegree slab, and returns the pointer to it.
  *
  * - void init_indegree(struct indegree *);
  *   void init_indegree_with_stride(struct indegree *, int);
@@ -78,63 +72,46 @@ static MAYBE_UNUSED void init_ ##slabname(struct slabname *s)		\
 									\
 static MAYBE_UNUSED void clear_ ##slabname(struct slabname *s)		\
 {									\
-	unsigned int i;							\
+	int i;								\
 	for (i = 0; i < s->slab_count; i++)				\
 		free(s->slab[i]);					\
 	s->slab_count = 0;						\
-	FREE_AND_NULL(s->slab);						\
+	free(s->slab);							\
+	s->slab = NULL;							\
 }									\
 									\
-static MAYBE_UNUSED elemtype *slabname## _at_peek(struct slabname *s,	\
-						  const struct commit *c, \
-						  int add_if_missing)   \
+static MAYBE_UNUSED elemtype *slabname## _at(struct slabname *s,	\
+				       const struct commit *c)		\
 {									\
-	unsigned int nth_slab, nth_slot;				\
+	int nth_slab, nth_slot;						\
 									\
 	nth_slab = c->index / s->slab_size;				\
 	nth_slot = c->index % s->slab_size;				\
 									\
 	if (s->slab_count <= nth_slab) {				\
-		unsigned int i;						\
-		if (!add_if_missing)					\
-			return NULL;					\
+		int i;							\
 		REALLOC_ARRAY(s->slab, nth_slab + 1);			\
 		stat_ ##slabname## realloc++;				\
 		for (i = s->slab_count; i <= nth_slab; i++)		\
 			s->slab[i] = NULL;				\
 		s->slab_count = nth_slab + 1;				\
 	}								\
-	if (!s->slab[nth_slab]) {					\
-		if (!add_if_missing)					\
-			return NULL;					\
+	if (!s->slab[nth_slab])						\
 		s->slab[nth_slab] = xcalloc(s->slab_size,		\
 					    sizeof(**s->slab) * s->stride);		\
-	}								\
-	return &s->slab[nth_slab][nth_slot * s->stride];		\
+	return &s->slab[nth_slab][nth_slot * s->stride];				\
 }									\
 									\
-static MAYBE_UNUSED elemtype *slabname## _at(struct slabname *s,	\
-					     const struct commit *c)	\
-{									\
-	return slabname##_at_peek(s, c, 1);				\
-}									\
-									\
-static MAYBE_UNUSED elemtype *slabname## _peek(struct slabname *s,	\
-					     const struct commit *c)	\
-{									\
-	return slabname##_at_peek(s, c, 0);				\
-}									\
-									\
-struct slabname
+static int stat_ ##slabname## realloc
 
 /*
- * Note that this redundant forward declaration is required
+ * Note that this seemingly redundant second declaration is required
  * to allow a terminating semicolon, which makes instantiations look
  * like function declarations.  I.e., the expansion of
  *
  *    define_commit_slab(indegree, int);
  *
- * ends in 'struct indegree;'.  This would otherwise
+ * ends in 'static int stat_indegreerealloc;'.  This would otherwise
  * be a syntax error according (at least) to ISO C.  It's hard to
  * catch because GCC silently parses it by default.
  */

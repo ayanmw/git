@@ -3,6 +3,7 @@ diff_cmd () {
 }
 
 merge_cmd () {
+	touch "$BACKUP"
 	if $base_present
 	then
 		"$merge_tool_path" "$LOCAL" "$REMOTE" \
@@ -11,4 +12,5 @@ merge_cmd () {
 		"$merge_tool_path" "$LOCAL" "$REMOTE" \
 			-merge "$MERGED" | cat
 	fi
+	check_unchanged
 }

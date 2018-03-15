@@ -38,10 +38,6 @@ sub format_one {
 	}
 }
 
-while (<>) {
-	last if /^### command list/;
-}
-
 my %cmds = ();
 for (sort <>) {
 	next if /^#/;

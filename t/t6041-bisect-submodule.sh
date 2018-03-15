@@ -8,7 +8,7 @@ test_description='bisect can handle submodules'
 git_bisect () {
 	git status -su >expect &&
 	ls -1pR * >>expect &&
-	tar cf "$TRASH_DIRECTORY/tmp.tar" * &&
+	tar czf "$TRASH_DIRECTORY/tmp.tgz" * &&
 	GOOD=$(git rev-parse --verify HEAD) &&
 	git checkout "$1" &&
 	echo "foo" >bar &&
@@ -20,7 +20,7 @@ git_bisect () {
 	git bisect start &&
 	git bisect good $GOOD &&
 	rm -rf * &&
-	tar xf "$TRASH_DIRECTORY/tmp.tar" &&
+	tar xzf "$TRASH_DIRECTORY/tmp.tgz" &&
 	git status -su >actual &&
 	ls -1pR * >>actual &&
 	test_cmp expect actual &&

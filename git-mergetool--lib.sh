@@ -2,9 +2,6 @@
 
 : ${MERGE_TOOLS_DIR=$(git --exec-path)/mergetools}
 
-IFS='
-'
-
 mode_ok () {
 	if diff_mode
 	then
@@ -100,7 +97,7 @@ check_unchanged () {
 		while true
 		do
 			echo "$MERGED seems unchanged."
-			printf "Was the merge successful [y/n]? "
+			printf "Was the merge successful? [y/n] "
 			read answer || return 1
 			case "$answer" in
 			y*|Y*) return 0 ;;
@@ -125,7 +122,16 @@ setup_user_tool () {
 	}
 
 	merge_cmd () {
-		( eval $merge_tool_cmd )
+		trust_exit_code=$(git config --bool \
+			"mergetool.$1.trustExitCode" || echo false)
+		if test "$trust_exit_code" = "false"
+		then
+			touch "$BACKUP"
+			( eval $merge_tool_cmd )
+			check_unchanged
+		else
+			( eval $merge_tool_cmd )
+		fi
 	}
 }
 
@@ -152,28 +158,6 @@ setup_tool () {
 	translate_merge_tool_path () {
 		echo "$1"
 	}
-
-	# Most tools' exit codes cannot be trusted, so By default we ignore
-	# their exit code and check the merged file's modification time in
-	# check_unchanged() to determine whether or not the merge was
-	# successful.  The return value from run_merge_cmd, by default, is
-	# determined by check_unchanged().
-	#
-	# When a tool's exit code can be trusted then the return value from
-	# run_merge_cmd is simply the tool's exit code, and check_unchanged()
-	# is not called.
-	#
-	# The return value of exit_code_trustable() tells us whether or not we
-	# can trust the tool's exit code.
-	#
-	# User-defined and built-in tools default to false.
-	# Built-in tools advertise that their exit code is trustable by
-	# redefining exit_code_trustable() to true.
-
-	exit_code_trustable () {
-		false
-	}
-
 
 	if ! test -f "$MERGE_TOOLS_DIR/$tool"
 	then
@@ -210,19 +194,6 @@ get_merge_tool_cmd () {
 	fi
 }
 
-trust_exit_code () {
-	if git config --bool "mergetool.$1.trustExitCode"
-	then
-		:; # OK
-	elif exit_code_trustable
-	then
-		echo true
-	else
-		echo false
-	fi
-}
-
-
 # Entry point for running tools
 run_merge_tool () {
 	# If GIT_PREFIX is empty then we cannot use it in tools
@@ -251,15 +222,7 @@ run_diff_cmd () {
 
 # Run a either a configured or built-in merge tool
 run_merge_cmd () {
-	mergetool_trust_exit_code=$(trust_exit_code "$1")
-	if test "$mergetool_trust_exit_code" = "true"
-	then
-		merge_cmd "$1"
-	else
-		touch "$BACKUP"
-		merge_cmd "$1"
-		check_unchanged
-	fi
+	merge_cmd "$1"
 }
 
 list_merge_tool_candidates () {
@@ -339,7 +302,6 @@ guess_merge_tool () {
 	EOF
 
 	# Loop over each candidate and stop when a valid merge tool is found.
-	IFS=' '
 	for tool in $tools
 	do
 		is_available "$tool" && echo "$tool" && return 0
@@ -405,29 +367,4 @@ get_merge_tool () {
 		merge_tool=$(guess_merge_tool) || exit
 	fi
 	echo "$merge_tool"
-}
-
-mergetool_find_win32_cmd () {
-	executable=$1
-	sub_directory=$2
-
-	# Use $executable if it exists in $PATH
-	if type -p "$executable" >/dev/null 2>&1
-	then
-		printf '%s' "$executable"
-		return
-	fi
-
-	# Look for executable in the typical locations
-	for directory in $(env | grep -Ei '^PROGRAM(FILES(\(X86\))?|W6432)=' |
-		cut -d '=' -f 2- | sort -u)
-	do
-		if test -n "$directory" && test -x "$directory/$sub_directory/$executable"
-		then
-			printf '%s' "$directory/$sub_directory/$executable"
-			return
-		fi
-	done
-
-	printf '%s' "$executable"
 }

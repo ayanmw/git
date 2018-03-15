@@ -1,6 +1,5 @@
 #include "builtin.h"
 #include "cache.h"
-#include "config.h"
 #include "dir.h"
 #include "parse-options.h"
 #include "run-command.h"
@@ -18,12 +17,6 @@ static const char *const git_repack_usage[] = {
 	N_("git repack [<options>]"),
 	NULL
 };
-
-static const char incremental_bitmap_conflict_error[] = N_(
-"Incremental repacks are incompatible with bitmap indexes.  Use\n"
-"--no-write-bitmap-index or disable the pack.writebitmaps configuration."
-);
-
 
 static int repack_config(const char *var, const char *value, void *cb)
 {
@@ -83,8 +76,7 @@ static void remove_pack_on_signal(int signo)
 
 /*
  * Adds all packs hex strings to the fname list, which do not
- * have a corresponding .keep or .promisor file. These packs are not to
- * be kept if we are going to pack everything into one file.
+ * have a corresponding .keep file.
  */
 static void get_non_kept_pack_filenames(struct string_list *fname_list)
 {
@@ -102,8 +94,7 @@ static void get_non_kept_pack_filenames(struct string_list *fname_list)
 
 		fname = xmemdupz(e->d_name, len);
 
-		if (!file_exists(mkpath("%s/%s.keep", packdir, fname)) &&
-		    !file_exists(mkpath("%s/%s.promisor", packdir, fname)))
+		if (!file_exists(mkpath("%s/%s.keep", packdir, fname)))
 			string_list_append_nodup(fname_list, fname);
 		else
 			free(fname);
@@ -155,10 +146,8 @@ int cmd_repack(int argc, const char **argv, const char *prefix)
 	int pack_everything = 0;
 	int delete_redundant = 0;
 	const char *unpack_unreachable = NULL;
-	int keep_unreachable = 0;
 	const char *window = NULL, *window_memory = NULL;
 	const char *depth = NULL;
-	const char *threads = NULL;
 	const char *max_pack_size = NULL;
 	int no_reuse_delta = 0, no_reuse_object = 0;
 	int no_update_server_info = 0;
@@ -186,16 +175,12 @@ int cmd_repack(int argc, const char **argv, const char *prefix)
 				N_("write bitmap index")),
 		OPT_STRING(0, "unpack-unreachable", &unpack_unreachable, N_("approxidate"),
 				N_("with -A, do not loosen objects older than this")),
-		OPT_BOOL('k', "keep-unreachable", &keep_unreachable,
-				N_("with -a, repack unreachable objects")),
 		OPT_STRING(0, "window", &window, N_("n"),
 				N_("size of the window used for delta compression")),
 		OPT_STRING(0, "window-memory", &window_memory, N_("bytes"),
 				N_("same as the above, but limit memory size instead of entries count")),
 		OPT_STRING(0, "depth", &depth, N_("n"),
 				N_("limits the maximum delta depth")),
-		OPT_STRING(0, "threads", &threads, N_("n"),
-				N_("limits the maximum number of threads")),
 		OPT_STRING(0, "max-pack-size", &max_pack_size, N_("bytes"),
 				N_("maximum size of each packfile")),
 		OPT_BOOL(0, "pack-kept-objects", &pack_kept_objects,
@@ -208,18 +193,8 @@ int cmd_repack(int argc, const char **argv, const char *prefix)
 	argc = parse_options(argc, argv, prefix, builtin_repack_options,
 				git_repack_usage, 0);
 
-	if (delete_redundant && repository_format_precious_objects)
-		die(_("cannot delete packs in a precious-objects repo"));
-
-	if (keep_unreachable &&
-	    (unpack_unreachable || (pack_everything & LOOSEN_UNREACHABLE)))
-		die(_("--keep-unreachable and -A are incompatible"));
-
 	if (pack_kept_objects < 0)
 		pack_kept_objects = write_bitmaps;
-
-	if (write_bitmaps && !(pack_everything & ALL_INTO_ONE))
-		die(_(incremental_bitmap_conflict_error));
 
 	packdir = mkpathdup("%s/pack", get_object_directory());
 	packtmp = mkpathdup("%s/.tmp-%d-pack", packdir, (int)getpid());
@@ -234,16 +209,12 @@ int cmd_repack(int argc, const char **argv, const char *prefix)
 	argv_array_push(&cmd.args, "--all");
 	argv_array_push(&cmd.args, "--reflog");
 	argv_array_push(&cmd.args, "--indexed-objects");
-	if (repository_format_partial_clone)
-		argv_array_push(&cmd.args, "--exclude-promisor-objects");
 	if (window)
 		argv_array_pushf(&cmd.args, "--window=%s", window);
 	if (window_memory)
 		argv_array_pushf(&cmd.args, "--window-memory=%s", window_memory);
 	if (depth)
 		argv_array_pushf(&cmd.args, "--depth=%s", depth);
-	if (threads)
-		argv_array_pushf(&cmd.args, "--threads=%s", threads);
 	if (max_pack_size)
 		argv_array_pushf(&cmd.args, "--max-pack-size=%s", max_pack_size);
 	if (no_reuse_delta)
@@ -265,9 +236,6 @@ int cmd_repack(int argc, const char **argv, const char *prefix)
 			} else if (pack_everything & LOOSEN_UNREACHABLE) {
 				argv_array_push(&cmd.args,
 						"--unpack-unreachable");
-			} else if (keep_unreachable) {
-				argv_array_push(&cmd.args, "--keep-unreachable");
-				argv_array_push(&cmd.args, "--pack-loose-unreachable");
 			} else {
 				argv_array_push(&cmd.env_array, "GIT_REF_PARANOIA=1");
 			}
@@ -295,7 +263,7 @@ int cmd_repack(int argc, const char **argv, const char *prefix)
 		return ret;
 
 	out = xfdopen(cmd.out, "r");
-	while (strbuf_getline_lf(&line, out) != EOF) {
+	while (strbuf_getline(&line, out, '\n') != EOF) {
 		if (line.len != 40)
 			die("repack: Expecting 40 character sha1 lines only from pack-objects.");
 		string_list_append(&names, line.buf);
@@ -325,7 +293,7 @@ int cmd_repack(int argc, const char **argv, const char *prefix)
 				continue;
 			}
 
-			fname_old = mkpathdup("%s/old-%s%s", packdir,
+			fname_old = mkpath("%s/old-%s%s", packdir,
 						item->string, exts[ext].name);
 			if (file_exists(fname_old))
 				if (unlink(fname_old))
@@ -333,12 +301,10 @@ int cmd_repack(int argc, const char **argv, const char *prefix)
 
 			if (!failed && rename(fname, fname_old)) {
 				free(fname);
-				free(fname_old);
 				failed = 1;
 				break;
 			} else {
 				string_list_append(&rollback, fname);
-				free(fname_old);
 			}
 		}
 		if (failed)
@@ -349,11 +315,10 @@ int cmd_repack(int argc, const char **argv, const char *prefix)
 		for_each_string_list_item(item, &rollback) {
 			char *fname, *fname_old;
 			fname = mkpathdup("%s/%s", packdir, item->string);
-			fname_old = mkpathdup("%s/old-%s", packdir, item->string);
+			fname_old = mkpath("%s/old-%s", packdir, item->string);
 			if (rename(fname_old, fname))
 				string_list_append(&rollback_failure, fname);
 			free(fname);
-			free(fname_old);
 		}
 
 		if (rollback_failure.nr) {
@@ -402,13 +367,12 @@ int cmd_repack(int argc, const char **argv, const char *prefix)
 	for_each_string_list_item(item, &names) {
 		for (ext = 0; ext < ARRAY_SIZE(exts); ext++) {
 			char *fname;
-			fname = mkpathdup("%s/old-%s%s",
-					  packdir,
-					  item->string,
-					  exts[ext].name);
+			fname = mkpath("%s/old-%s%s",
+					packdir,
+					item->string,
+					exts[ext].name);
 			if (remove_path(fname))
-				warning(_("failed to remove '%s'"), fname);
-			free(fname);
+				warning(_("removing '%s' failed"), fname);
 		}
 	}
 

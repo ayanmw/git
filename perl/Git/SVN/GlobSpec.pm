@@ -8,23 +8,19 @@ sub new {
 	$re =~ s!/+$!!g; # no need for trailing slashes
 	my (@left, @right, @patterns);
 	my $state = "left";
-	my $die_msg = "Only one set of wildcards " .
-				"(e.g. '*' or '*/*/*') is supported: $glob\n";
+	my $die_msg = "Only one set of wildcard directories " .
+				"(e.g. '*' or '*/*/*') is supported: '$glob'\n";
 	for my $part (split(m|/|, $glob)) {
-		if ($pattern_ok && $part =~ /[{}]/ &&
+		if ($part =~ /\*/ && $part ne "*") {
+			die "Invalid pattern in '$glob': $part\n";
+		} elsif ($pattern_ok && $part =~ /[{}]/ &&
 			 $part !~ /^\{[^{}]+\}/) {
 			die "Invalid pattern in '$glob': $part\n";
 		}
-		my $nstars = $part =~ tr/*//;
-		if ($nstars > 1) {
-			die "Only one '*' is allowed in a pattern: '$part'\n";
-		}
-		if ($part =~ /(.*)\*(.*)/) {
+		if ($part eq "*") {
 			die $die_msg if $state eq "right";
-			my ($l, $r) = ($1, $2);
 			$state = "pattern";
-			my $pat = quotemeta($l) . '[^/]*' . quotemeta($r);
-			push(@patterns, $pat);
+			push(@patterns, "[^/]*");
 		} elsif ($pattern_ok && $part =~ /^\{(.*)\}$/) {
 			die $die_msg if $state eq "right";
 			$state = "pattern";

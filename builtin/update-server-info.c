@@ -1,5 +1,4 @@
 #include "cache.h"
-#include "config.h"
 #include "builtin.h"
 #include "parse-options.h"
 
@@ -12,7 +11,7 @@ int cmd_update_server_info(int argc, const char **argv, const char *prefix)
 {
 	int force = 0;
 	struct option options[] = {
-		OPT__FORCE(&force, N_("update the info files from scratch"), 0),
+		OPT__FORCE(&force, N_("update the info files from scratch")),
 		OPT_END()
 	};
 

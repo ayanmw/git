@@ -67,7 +67,7 @@ repo_with_newline='repo
 with
 newline'
 
-if test_have_prereq !MINGW && mkdir "$repo_with_newline" 2>/dev/null
+if mkdir "$repo_with_newline" 2>/dev/null
 then
 	test_set_prereq FUNNYNAMES
 else
@@ -107,7 +107,7 @@ test_expect_success 'prompt - describe detached head - contains' '
 '
 
 test_expect_success 'prompt - describe detached head - branch' '
-	printf " ((tags/t2~1))" >expected &&
+	printf " ((b1~1))" >expected &&
 	git checkout b1^ &&
 	test_when_finished "git checkout master" &&
 	(
@@ -177,7 +177,7 @@ test_expect_success 'prompt - interactive rebase' '
 	git checkout b1 &&
 	test_when_finished "git checkout master" &&
 	git rebase -i HEAD^ &&
-	test_when_finished "git rebase --abort" &&
+	test_when_finished "git rebase --abort"
 	__git_ps1 >"$actual" &&
 	test_cmp expected "$actual"
 '
@@ -273,36 +273,11 @@ test_expect_success 'prompt - dirty status indicator - dirty index and worktree'
 	test_cmp expected "$actual"
 '
 
-test_expect_success 'prompt - dirty status indicator - orphan branch - clean' '
-	printf " (orphan #)" >expected &&
-	test_when_finished "git checkout master" &&
-	git checkout --orphan orphan &&
-	git reset --hard &&
+test_expect_success 'prompt - dirty status indicator - before root commit' '
+	printf " (master #)" >expected &&
 	(
 		GIT_PS1_SHOWDIRTYSTATE=y &&
-		__git_ps1 >"$actual"
-	) &&
-	test_cmp expected "$actual"
-'
-
-test_expect_success 'prompt - dirty status indicator - orphan branch - dirty index' '
-	printf " (orphan +)" >expected &&
-	test_when_finished "git checkout master" &&
-	git checkout --orphan orphan &&
-	(
-		GIT_PS1_SHOWDIRTYSTATE=y &&
-		__git_ps1 >"$actual"
-	) &&
-	test_cmp expected "$actual"
-'
-
-test_expect_success 'prompt - dirty status indicator - orphan branch - dirty index and worktree' '
-	printf " (orphan *+)" >expected &&
-	test_when_finished "git checkout master" &&
-	git checkout --orphan orphan &&
-	>file &&
-	(
-		GIT_PS1_SHOWDIRTYSTATE=y &&
+		cd otherrepo &&
 		__git_ps1 >"$actual"
 	) &&
 	test_cmp expected "$actual"
@@ -417,31 +392,6 @@ test_expect_success 'prompt - untracked files status indicator - untracked files
 	printf " (master %%)" >expected &&
 	(
 		GIT_PS1_SHOWUNTRACKEDFILES=y &&
-		__git_ps1 >"$actual"
-	) &&
-	test_cmp expected "$actual"
-'
-
-test_expect_success 'prompt - untracked files status indicator - empty untracked dir' '
-	printf " (master)" >expected &&
-	mkdir otherrepo/untracked-dir &&
-	test_when_finished "rm -rf otherrepo/untracked-dir" &&
-	(
-		GIT_PS1_SHOWUNTRACKEDFILES=y &&
-		cd otherrepo &&
-		__git_ps1 >"$actual"
-	) &&
-	test_cmp expected "$actual"
-'
-
-test_expect_success 'prompt - untracked files status indicator - non-empty untracked dir' '
-	printf " (master %%)" >expected &&
-	mkdir otherrepo/untracked-dir &&
-	test_when_finished "rm -rf otherrepo/untracked-dir" &&
-	>otherrepo/untracked-dir/untracked-file &&
-	(
-		GIT_PS1_SHOWUNTRACKEDFILES=y &&
-		cd otherrepo &&
 		__git_ps1 >"$actual"
 	) &&
 	test_cmp expected "$actual"
@@ -735,12 +685,22 @@ test_expect_success 'prompt - hide if pwd ignored - env var set, config unset, p
 	test_cmp expected "$actual"
 '
 
-test_expect_success 'prompt - hide if pwd ignored - inside gitdir' '
+test_expect_success 'prompt - hide if pwd ignored - inside gitdir (stdout)' '
 	printf " (GIT_DIR!)" >expected &&
 	(
 		GIT_PS1_HIDE_IF_PWD_IGNORED=y &&
 		cd .git &&
-		__git_ps1 >"$actual"
+		__git_ps1 >"$actual" 2>/dev/null
+	) &&
+	test_cmp expected "$actual"
+'
+
+test_expect_success 'prompt - hide if pwd ignored - inside gitdir (stderr)' '
+	printf "" >expected &&
+	(
+		GIT_PS1_HIDE_IF_PWD_IGNORED=y &&
+		cd .git &&
+		__git_ps1 >/dev/null 2>"$actual"
 	) &&
 	test_cmp expected "$actual"
 '

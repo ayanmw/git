@@ -27,7 +27,9 @@ cat << EOF
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with this program; if not, see <http://www.gnu.org/licenses/>.
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston,
+# MA 02111-1307 USA
 #
 EOF
 }
@@ -66,8 +68,8 @@ test_expect_success 'setup git mirror and merge' '
 test_debug 'gitk --all & sleep 1'
 
 test_expect_success 'verify pre-merge ancestry' "
-	test x\$(git rev-parse --verify refs/heads/svn^2) = \
-	     x\$(git rev-parse --verify refs/heads/merge) &&
+	test x\`git rev-parse --verify refs/heads/svn^2\` = \
+	     x\`git rev-parse --verify refs/heads/merge\` &&
 	git cat-file commit refs/heads/svn^ | grep '^friend$'
 	"
 
@@ -78,10 +80,10 @@ test_expect_success 'git svn dcommit merges' "
 test_debug 'gitk --all & sleep 1'
 
 test_expect_success 'verify post-merge ancestry' "
-	test x\$(git rev-parse --verify refs/heads/svn) = \
-	     x\$(git rev-parse --verify refs/remotes/origin/trunk) &&
-	test x\$(git rev-parse --verify refs/heads/svn^2) = \
-	     x\$(git rev-parse --verify refs/heads/merge) &&
+	test x\`git rev-parse --verify refs/heads/svn\` = \
+	     x\`git rev-parse --verify refs/remotes/origin/trunk \` &&
+	test x\`git rev-parse --verify refs/heads/svn^2\` = \
+	     x\`git rev-parse --verify refs/heads/merge\` &&
 	git cat-file commit refs/heads/svn^ | grep '^friend$'
 	"
 

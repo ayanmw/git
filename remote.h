@@ -5,7 +5,6 @@
 #include "hashmap.h"
 
 enum {
-	REMOTE_UNCONFIGURED = 0,
 	REMOTE_CONFIG,
 	REMOTE_REMOTES,
 	REMOTE_BRANCHES
@@ -15,7 +14,7 @@ struct remote {
 	struct hashmap_entry ent;  /* must be first */
 
 	const char *name;
-	int origin, configured_in_repo;
+	int origin;
 
 	const char *foreign_vcs;
 
@@ -47,7 +46,6 @@ struct remote {
 	int skip_default_update;
 	int mirror;
 	int prune;
-	int prune_tags;
 
 	const char *receivepack;
 	const char *uploadpack;
@@ -56,12 +54,11 @@ struct remote {
 	 * for curl remotes only
 	 */
 	char *http_proxy;
-	char *http_proxy_authmethod;
 };
 
 struct remote *remote_get(const char *name);
 struct remote *pushremote_get(const char *name);
-int remote_is_configured(struct remote *remote, int in_repo);
+int remote_is_configured(const char *name);
 
 typedef int each_remote_fn(struct remote *remote, void *priv);
 int for_each_remote(each_remote_fn fn, void *priv);
@@ -82,21 +79,17 @@ extern const struct refspec *tag_refspec;
 
 struct ref {
 	struct ref *next;
-	struct object_id old_oid;
-	struct object_id new_oid;
-	struct object_id old_oid_expect; /* used by expect-old */
+	unsigned char old_sha1[20];
+	unsigned char new_sha1[20];
+	unsigned char old_sha1_expect[20]; /* used by expect-old */
 	char *symref;
 	unsigned int
 		force:1,
 		forced_update:1,
 		expect_old_sha1:1,
-		deletion:1;
-
-	enum {
-		REF_NOT_MATCHED = 0, /* initial value */
-		REF_MATCHED,
-		REF_UNADVERTISED_NOT_ALLOWED
-	} match_status;
+		expect_old_no_trackback:1,
+		deletion:1,
+		matched:1;
 
 	/*
 	 * Order is important here, as we write to FETCH_HEAD
@@ -150,14 +143,14 @@ int check_ref_type(const struct ref *ref, int flags);
  */
 void free_refs(struct ref *ref);
 
-struct oid_array;
+struct sha1_array;
 extern struct ref **get_remote_heads(int in, char *src_buf, size_t src_len,
 				     struct ref **list, unsigned int flags,
-				     struct oid_array *extra_have,
-				     struct oid_array *shallow);
+				     struct sha1_array *extra_have,
+				     struct sha1_array *shallow);
 
 int resolve_remote_symref(struct ref *ref, struct ref *list);
-int ref_newer(const struct object_id *new_oid, const struct object_id *old_oid);
+int ref_newer(const unsigned char *new_sha1, const unsigned char *old_sha1);
 
 /*
  * Remove and free all but the first of any entries in the input list
@@ -170,7 +163,6 @@ struct ref *ref_remove_duplicates(struct ref *ref_map);
 
 int valid_fetch_refspec(const char *refspec);
 struct refspec *parse_fetch_refspec(int nr_refspec, const char **refspec);
-extern struct refspec *parse_push_refspec(int nr_refspec, const char **refspec);
 
 void free_refspec(int nr_refspec, struct refspec *refspec);
 
@@ -211,43 +203,18 @@ struct branch {
 	const char *refname;
 
 	const char *remote_name;
-	const char *pushremote_name;
+	struct remote *remote;
 
 	const char **merge_name;
 	struct refspec **merge;
 	int merge_nr;
 	int merge_alloc;
-
-	const char *push_tracking_ref;
 };
 
 struct branch *branch_get(const char *name);
-const char *remote_for_branch(struct branch *branch, int *explicit);
-const char *pushremote_for_branch(struct branch *branch, int *explicit);
-const char *remote_ref_for_branch(struct branch *branch, int for_push,
-				  int *explicit);
 
 int branch_has_merge_config(struct branch *branch);
 int branch_merge_matches(struct branch *, int n, const char *);
-
-/**
- * Return the fully-qualified refname of the tracking branch for `branch`.
- * I.e., what "branch@{upstream}" would give you. Returns NULL if no
- * upstream is defined.
- *
- * If `err` is not NULL and no upstream is defined, a more specific error
- * message is recorded there (if the function does not return NULL, then
- * `err` is not touched).
- */
-const char *branch_get_upstream(struct branch *branch, struct strbuf *err);
-
-/**
- * Return the tracking branch that corresponds to the ref we would push to
- * given a bare `git push` while `branch` is checked out.
- *
- * The return value and `err` conventions match those of `branch_get_upstream`.
- */
-const char *branch_get_push(struct branch *branch, struct strbuf *err);
 
 /* Flags to match_refs. */
 enum match_refs_flags {
@@ -258,18 +225,9 @@ enum match_refs_flags {
 	MATCH_REFS_FOLLOW_TAGS	= (1 << 3)
 };
 
-/* Flags for --ahead-behind option. */
-enum ahead_behind_flags {
-	AHEAD_BEHIND_UNSPECIFIED = -1,
-	AHEAD_BEHIND_QUICK       =  0,  /* just eq/neq reporting */
-	AHEAD_BEHIND_FULL        =  1,  /* traditional a/b reporting */
-};
-
 /* Reporting of tracking info */
-int stat_tracking_info(struct branch *branch, int *num_ours, int *num_theirs,
-		       const char **upstream_name, enum ahead_behind_flags abf);
-int format_tracking_info(struct branch *branch, struct strbuf *sb,
-			 enum ahead_behind_flags abf);
+int stat_tracking_info(struct branch *branch, int *num_ours, int *num_theirs);
+int format_tracking_info(struct branch *branch, struct strbuf *sb);
 
 struct ref *get_local_heads(void);
 /*
@@ -293,7 +251,7 @@ struct ref *get_stale_heads(struct refspec *refs, int ref_count, struct ref *fet
 struct push_cas_option {
 	unsigned use_tracking_for_rest:1;
 	struct push_cas {
-		struct object_id expect;
+		unsigned char expect[20];
 		unsigned use_tracking:1;
 		char *refname;
 	} *entry;
@@ -302,12 +260,9 @@ struct push_cas_option {
 };
 
 extern int parseopt_push_cas_option(const struct option *, const char *arg, int unset);
+extern int parse_push_cas_option(struct push_cas_option *, const char *arg, int unset);
 
 extern int is_empty_cas(const struct push_cas_option *);
 void apply_push_cas(struct push_cas_option *, struct remote *, struct ref *);
-
-#define TAG_REFSPEC "refs/tags/*:refs/tags/*"
-
-void add_prune_tags_to_fetch_refspec(struct remote *remote);
 
 #endif

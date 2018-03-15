@@ -25,7 +25,7 @@
 struct userdiff_driver;
 
 struct diff_filespec {
-	struct object_id oid;
+	unsigned char sha1[20];
 	char *path;
 	void *data;
 	void *cnt_data;
@@ -33,7 +33,7 @@ struct diff_filespec {
 	int count;               /* Reference count */
 	int rename_used;         /* Count of rename users */
 	unsigned short mode;	 /* file mode */
-	unsigned oid_valid : 1;  /* if true, use oid and trust mode;
+	unsigned sha1_valid : 1; /* if true, use sha1 and trust mode;
 				  * if false, use the name and read from
 				  * the filesystem.
 				  */
@@ -52,7 +52,7 @@ struct diff_filespec {
 
 extern struct diff_filespec *alloc_filespec(const char *);
 extern void free_filespec(struct diff_filespec *);
-extern void fill_filespec(struct diff_filespec *, const struct object_id *,
+extern void fill_filespec(struct diff_filespec *, const unsigned char *,
 			  int, unsigned short);
 
 #define CHECK_SIZE_ONLY 1
@@ -142,6 +142,7 @@ extern int diffcore_count_changes(struct diff_filespec *src,
 				  struct diff_filespec *dst,
 				  void **src_count_p,
 				  void **dst_count_p,
+				  unsigned long delta_limit,
 				  unsigned long *src_copied,
 				  unsigned long *literal_added);
 

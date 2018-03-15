@@ -97,10 +97,7 @@ test_expect_failure 'will not overwrite unstaged changes in renamed file' '
 	git mv c1.c other.c &&
 	git commit -m rename &&
 	cp important other.c &&
-	test_must_fail git merge c1a >out &&
-	test_i18ngrep "Refusing to lose dirty file at other.c" out &&
-	test_path_is_file other.c~HEAD &&
-	test $(git hash-object other.c~HEAD) = $(git rev-parse c1a:c1.c) &&
+	git merge c1a &&
 	test_cmp important other.c
 '
 
@@ -118,7 +115,7 @@ cat >expect <<\EOF
 error: The following untracked working tree files would be overwritten by merge:
 	sub
 	sub2
-Please move or remove them before you merge.
+Please move or remove them before you can merge.
 Aborting
 EOF
 
@@ -128,7 +125,7 @@ test_expect_success 'will not overwrite untracked file in leading path' '
 	cp important sub &&
 	cp important sub2 &&
 	test_must_fail git merge sub 2>out &&
-	test_i18ncmp out expect &&
+	test_cmp out expect &&
 	test_path_is_missing .git/MERGE_HEAD &&
 	test_cmp important sub &&
 	test_cmp important sub2 &&

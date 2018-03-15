@@ -1,25 +1,24 @@
 #include "cache.h"
-#include "config.h"
 #include "commit.h"
 #include "refs.h"
 #include "notes-utils.h"
 
 void create_notes_commit(struct notes_tree *t, struct commit_list *parents,
 			 const char *msg, size_t msg_len,
-			 struct object_id *result_oid)
+			 unsigned char *result_sha1)
 {
-	struct object_id tree_oid;
+	unsigned char tree_sha1[20];
 
 	assert(t->initialized);
 
-	if (write_notes_tree(t, &tree_oid))
+	if (write_notes_tree(t, tree_sha1))
 		die("Failed to write notes tree to database");
 
 	if (!parents) {
 		/* Deduce parent commit from t->ref */
-		struct object_id parent_oid;
-		if (!read_ref(t->ref, &parent_oid)) {
-			struct commit *parent = lookup_commit(&parent_oid);
+		unsigned char parent_sha1[20];
+		if (!read_ref(t->ref, parent_sha1)) {
+			struct commit *parent = lookup_commit(parent_sha1);
 			if (parse_commit(parent))
 				die("Failed to find/parse commit %s", t->ref);
 			commit_list_insert(parent, &parents);
@@ -27,19 +26,18 @@ void create_notes_commit(struct notes_tree *t, struct commit_list *parents,
 		/* else: t->ref points to nothing, assume root/orphan commit */
 	}
 
-	if (commit_tree(msg, msg_len, &tree_oid, parents, result_oid, NULL,
-			NULL))
+	if (commit_tree(msg, msg_len, tree_sha1, parents, result_sha1, NULL, NULL))
 		die("Failed to commit notes tree to database");
 }
 
 void commit_notes(struct notes_tree *t, const char *msg)
 {
 	struct strbuf buf = STRBUF_INIT;
-	struct object_id commit_oid;
+	unsigned char commit_sha1[20];
 
 	if (!t)
 		t = &default_notes_tree;
-	if (!t->initialized || !t->update_ref || !*t->update_ref)
+	if (!t->initialized || !t->ref || !*t->ref)
 		die(_("Cannot commit uninitialized/unreferenced notes tree"));
 	if (!t->dirty)
 		return; /* don't have to commit an unchanged tree */
@@ -48,30 +46,12 @@ void commit_notes(struct notes_tree *t, const char *msg)
 	strbuf_addstr(&buf, msg);
 	strbuf_complete_line(&buf);
 
-	create_notes_commit(t, NULL, buf.buf, buf.len, &commit_oid);
+	create_notes_commit(t, NULL, buf.buf, buf.len, commit_sha1);
 	strbuf_insert(&buf, 0, "notes: ", 7); /* commit message starts at index 7 */
-	update_ref(buf.buf, t->update_ref, &commit_oid, NULL, 0,
+	update_ref(buf.buf, t->ref, commit_sha1, NULL, 0,
 		   UPDATE_REFS_DIE_ON_ERR);
 
 	strbuf_release(&buf);
-}
-
-int parse_notes_merge_strategy(const char *v, enum notes_merge_strategy *s)
-{
-	if (!strcmp(v, "manual"))
-		*s = NOTES_MERGE_RESOLVE_MANUAL;
-	else if (!strcmp(v, "ours"))
-		*s = NOTES_MERGE_RESOLVE_OURS;
-	else if (!strcmp(v, "theirs"))
-		*s = NOTES_MERGE_RESOLVE_THEIRS;
-	else if (!strcmp(v, "union"))
-		*s = NOTES_MERGE_RESOLVE_UNION;
-	else if (!strcmp(v, "cat_sort_uniq"))
-		*s = NOTES_MERGE_RESOLVE_CAT_SORT_UNIQ;
-	else
-		return -1;
-
-	return 0;
 }
 
 static combine_notes_fn parse_combine_notes_fn(const char *v)
@@ -134,11 +114,8 @@ struct notes_rewrite_cfg *init_copy_notes_for_rewrite(const char *cmd)
 		c->mode_from_env = 1;
 		c->combine = parse_combine_notes_fn(rewrite_mode_env);
 		if (!c->combine)
-			/*
-			 * TRANSLATORS: The first %s is the name of
-			 * the environment variable, the second %s is
-			 * its value.
-			 */
+			/* TRANSLATORS: The first %s is the name of the
+			   environment variable, the second %s is its value */
 			error(_("Bad %s value: '%s'"), GIT_NOTES_REWRITE_MODE_ENVIRONMENT,
 					rewrite_mode_env);
 	}
@@ -153,14 +130,14 @@ struct notes_rewrite_cfg *init_copy_notes_for_rewrite(const char *cmd)
 		free(c);
 		return NULL;
 	}
-	c->trees = load_notes_trees(c->refs, NOTES_INIT_WRITABLE);
+	c->trees = load_notes_trees(c->refs);
 	string_list_clear(c->refs, 0);
 	free(c->refs);
 	return c;
 }
 
 int copy_note_for_rewrite(struct notes_rewrite_cfg *c,
-			  const struct object_id *from_obj, const struct object_id *to_obj)
+			  const unsigned char *from_obj, const unsigned char *to_obj)
 {
 	int ret = 0;
 	int i;

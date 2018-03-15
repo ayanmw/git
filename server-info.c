@@ -3,7 +3,6 @@
 #include "object.h"
 #include "commit.h"
 #include "tag.h"
-#include "packfile.h"
 
 /*
  * Create the file "path" by writing to a temporary file and renaming
@@ -15,21 +14,19 @@ static int update_info_file(char *path, int (*generate)(FILE *))
 	char *tmp = mkpathdup("%s_XXXXXX", path);
 	int ret = -1;
 	int fd = -1;
-	FILE *fp = NULL, *to_close;
+	FILE *fp = NULL;
 
 	safe_create_leading_directories(path);
 	fd = git_mkstemp_mode(tmp, 0666);
 	if (fd < 0)
 		goto out;
-	to_close = fp = fdopen(fd, "w");
+	fp = fdopen(fd, "w");
 	if (!fp)
 		goto out;
-	fd = -1;
 	ret = generate(fp);
 	if (ret)
 		goto out;
-	fp = NULL;
-	if (fclose(to_close))
+	if (fclose(fp))
 		goto out;
 	if (adjust_shared_perm(tmp) < 0)
 		goto out;
@@ -39,7 +36,7 @@ static int update_info_file(char *path, int (*generate)(FILE *))
 
 out:
 	if (ret) {
-		error_errno("unable to update %s", path);
+		error("unable to update %s: %s", path, strerror(errno));
 		if (fp)
 			fclose(fp);
 		else if (fd >= 0)
@@ -50,22 +47,21 @@ out:
 	return ret;
 }
 
-static int add_info_ref(const char *path, const struct object_id *oid,
-			int flag, void *cb_data)
+static int add_info_ref(const char *path, const unsigned char *sha1, int flag, void *cb_data)
 {
 	FILE *fp = cb_data;
-	struct object *o = parse_object(oid);
+	struct object *o = parse_object(sha1);
 	if (!o)
 		return -1;
 
-	if (fprintf(fp, "%s	%s\n", oid_to_hex(oid), path) < 0)
+	if (fprintf(fp, "%s	%s\n", sha1_to_hex(sha1), path) < 0)
 		return -1;
 
 	if (o->type == OBJ_TAG) {
 		o = deref_tag(o, path, 0);
 		if (o)
 			if (fprintf(fp, "%s	%s^{}\n",
-				oid_to_hex(&o->oid), path) < 0)
+				sha1_to_hex(o->sha1), path) < 0)
 				return -1;
 	}
 	return 0;
@@ -134,7 +130,7 @@ static int read_pack_info_file(const char *infofile)
 	char line[1000];
 	int old_cnt = 0;
 
-	fp = fopen_or_warn(infofile, "r");
+	fp = fopen(infofile, "r");
 	if (!fp)
 		return 1; /* nonexistent is not an error. */
 
@@ -232,7 +228,7 @@ static void init_pack_info(const char *infofile, int force)
 	}
 
 	/* renumber them */
-	QSORT(info, num_pack, compare_info);
+	qsort(info, num_pack, sizeof(info[0]), compare_info);
 	for (i = 0; i < num_pack; i++)
 		info[i]->new_num = i;
 }

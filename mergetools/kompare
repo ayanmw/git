@@ -5,7 +5,3 @@ can_merge () {
 diff_cmd () {
 	"$merge_tool_path" "$LOCAL" "$REMOTE"
 }
-
-exit_code_trustable () {
-	true
-}

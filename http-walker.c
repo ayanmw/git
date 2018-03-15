@@ -2,9 +2,6 @@
 #include "commit.h"
 #include "walker.h"
 #include "http.h"
-#include "list.h"
-#include "transport.h"
-#include "packfile.h"
 
 struct alt_base {
 	char *base;
@@ -26,13 +23,13 @@ struct object_request {
 	struct alt_base *repo;
 	enum object_request_state state;
 	struct http_object_request *req;
-	struct list_head node;
+	struct object_request *next;
 };
 
 struct alternates_request {
 	struct walker *walker;
 	const char *base;
-	struct strbuf *url;
+	char *url;
 	struct strbuf *buffer;
 	struct active_request_slot *slot;
 	int http_specific;
@@ -44,7 +41,7 @@ struct walker_data {
 	struct alt_base *alt;
 };
 
-static LIST_HEAD(object_queue_head);
+static struct object_request *object_queue_head;
 
 static void fetch_alternates(struct walker *walker, const char *base);
 
@@ -113,10 +110,19 @@ static void process_object_response(void *callback_data)
 
 static void release_object_request(struct object_request *obj_req)
 {
+	struct object_request *entry = object_queue_head;
+
 	if (obj_req->req !=NULL && obj_req->req->localfile != -1)
 		error("fd leakage in release: %d", obj_req->req->localfile);
+	if (obj_req == object_queue_head) {
+		object_queue_head = obj_req->next;
+	} else {
+		while (entry->next != NULL && entry->next != obj_req)
+			entry = entry->next;
+		if (entry->next == obj_req)
+			entry->next = entry->next->next;
+	}
 
-	list_del(&obj_req->node);
 	free(obj_req);
 }
 
@@ -124,10 +130,8 @@ static void release_object_request(struct object_request *obj_req)
 static int fill_active_slot(struct walker *walker)
 {
 	struct object_request *obj_req;
-	struct list_head *pos, *tmp, *head = &object_queue_head;
 
-	list_for_each_safe(pos, tmp, head) {
-		obj_req = list_entry(pos, struct object_request, node);
+	for (obj_req = object_queue_head; obj_req; obj_req = obj_req->next) {
 		if (obj_req->state == WAITING) {
 			if (has_sha1_file(obj_req->sha1))
 				obj_req->state = COMPLETE;
@@ -144,6 +148,7 @@ static int fill_active_slot(struct walker *walker)
 static void prefetch(struct walker *walker, unsigned char *sha1)
 {
 	struct object_request *newreq;
+	struct object_request *tail;
 	struct walker_data *data = walker->data;
 
 	newreq = xmalloc(sizeof(*newreq));
@@ -152,45 +157,23 @@ static void prefetch(struct walker *walker, unsigned char *sha1)
 	newreq->repo = data->alt;
 	newreq->state = WAITING;
 	newreq->req = NULL;
+	newreq->next = NULL;
 
 	http_is_verbose = walker->get_verbosely;
-	list_add_tail(&newreq->node, &object_queue_head);
+
+	if (object_queue_head == NULL) {
+		object_queue_head = newreq;
+	} else {
+		tail = object_queue_head;
+		while (tail->next != NULL)
+			tail = tail->next;
+		tail->next = newreq;
+	}
 
 #ifdef USE_CURL_MULTI
 	fill_active_slots();
 	step_active_slots();
 #endif
-}
-
-static int is_alternate_allowed(const char *url)
-{
-	const char *protocols[] = {
-		"http", "https", "ftp", "ftps"
-	};
-	int i;
-
-	if (http_follow_config != HTTP_FOLLOW_ALWAYS) {
-		warning("alternate disabled by http.followRedirects: %s", url);
-		return 0;
-	}
-
-	for (i = 0; i < ARRAY_SIZE(protocols); i++) {
-		const char *end;
-		if (skip_prefix(url, protocols[i], &end) &&
-		    starts_with(end, "://"))
-			break;
-	}
-
-	if (i >= ARRAY_SIZE(protocols)) {
-		warning("ignoring alternate with unknown protocol: %s", url);
-		return 0;
-	}
-	if (!is_transport_allowed(protocols[i], 0)) {
-		warning("ignoring alternate with restricted protocol: %s", url);
-		return 0;
-	}
-
-	return 1;
 }
 
 static void process_alternates_response(void *callback_data)
@@ -212,11 +195,10 @@ static void process_alternates_response(void *callback_data)
 
 			/* Try reusing the slot to get non-http alternates */
 			alt_req->http_specific = 0;
-			strbuf_reset(alt_req->url);
-			strbuf_addf(alt_req->url, "%s/objects/info/alternates",
-				    base);
+			sprintf(alt_req->url, "%s/objects/info/alternates",
+				base);
 			curl_easy_setopt(slot->curl, CURLOPT_URL,
-					 alt_req->url->buf);
+					 alt_req->url);
 			active_requests++;
 			slot->in_use = 1;
 			if (slot->finished != NULL)
@@ -302,30 +284,23 @@ static void process_alternates_response(void *callback_data)
 					okay = 1;
 				}
 			}
+			/* skip "objects\n" at end */
 			if (okay) {
 				struct strbuf target = STRBUF_INIT;
 				strbuf_add(&target, base, serverlen);
-				strbuf_add(&target, data + i, posn - i);
-				if (!strbuf_strip_suffix(&target, "objects")) {
-					warning("ignoring alternate that does"
-						" not end in 'objects': %s",
+				strbuf_add(&target, data + i, posn - i - 7);
+				if (walker->get_verbosely)
+					fprintf(stderr, "Also look at %s\n",
 						target.buf);
-					strbuf_release(&target);
-				} else if (is_alternate_allowed(target.buf)) {
-					warning("adding alternate object store: %s",
-						target.buf);
-					newalt = xmalloc(sizeof(*newalt));
-					newalt->next = NULL;
-					newalt->base = strbuf_detach(&target, NULL);
-					newalt->got_indices = 0;
-					newalt->packs = NULL;
+				newalt = xmalloc(sizeof(*newalt));
+				newalt->next = NULL;
+				newalt->base = strbuf_detach(&target, NULL);
+				newalt->got_indices = 0;
+				newalt->packs = NULL;
 
-					while (tail->next != NULL)
-						tail = tail->next;
-					tail->next = newalt;
-				} else {
-					strbuf_release(&target);
-				}
+				while (tail->next != NULL)
+					tail = tail->next;
+				tail->next = newalt;
 			}
 		}
 		i = posn + 1;
@@ -337,7 +312,7 @@ static void process_alternates_response(void *callback_data)
 static void fetch_alternates(struct walker *walker, const char *base)
 {
 	struct strbuf buffer = STRBUF_INIT;
-	struct strbuf url = STRBUF_INIT;
+	char *url;
 	struct active_request_slot *slot;
 	struct alternates_request alt_req;
 	struct walker_data *cdata = walker->data;
@@ -363,7 +338,7 @@ static void fetch_alternates(struct walker *walker, const char *base)
 	if (walker->get_verbosely)
 		fprintf(stderr, "Getting alternates list for %s\n", base);
 
-	strbuf_addf(&url, "%s/objects/info/http-alternates", base);
+	url = xstrfmt("%s/objects/info/http-alternates", base);
 
 	/*
 	 * Use a callback to process the result, since another request
@@ -376,10 +351,10 @@ static void fetch_alternates(struct walker *walker, const char *base)
 
 	curl_easy_setopt(slot->curl, CURLOPT_FILE, &buffer);
 	curl_easy_setopt(slot->curl, CURLOPT_WRITEFUNCTION, fwrite_buffer);
-	curl_easy_setopt(slot->curl, CURLOPT_URL, url.buf);
+	curl_easy_setopt(slot->curl, CURLOPT_URL, url);
 
 	alt_req.base = base;
-	alt_req.url = &url;
+	alt_req.url = url;
 	alt_req.buffer = &buffer;
 	alt_req.http_specific = 1;
 	alt_req.slot = slot;
@@ -390,7 +365,7 @@ static void fetch_alternates(struct walker *walker, const char *base)
 		cdata->got_alternates = -1;
 
 	strbuf_release(&buffer);
-	strbuf_release(&url);
+	free(url);
 }
 
 static int fetch_indices(struct walker *walker, struct alt_base *repo)
@@ -471,19 +446,15 @@ static void abort_object_request(struct object_request *obj_req)
 	release_object_request(obj_req);
 }
 
-static int fetch_object(struct walker *walker, unsigned char *sha1)
+static int fetch_object(struct walker *walker, struct alt_base *repo, unsigned char *sha1)
 {
 	char *hex = sha1_to_hex(sha1);
 	int ret = 0;
-	struct object_request *obj_req = NULL;
+	struct object_request *obj_req = object_queue_head;
 	struct http_object_request *req;
-	struct list_head *pos, *head = &object_queue_head;
 
-	list_for_each(pos, head) {
-		obj_req = list_entry(pos, struct object_request, node);
-		if (!hashcmp(obj_req->sha1, sha1))
-			break;
-	}
+	while (obj_req != NULL && hashcmp(obj_req->sha1, sha1))
+		obj_req = obj_req->next;
 	if (obj_req == NULL)
 		return error("Couldn't find request for %s in the queue", hex);
 
@@ -516,18 +487,6 @@ static int fetch_object(struct walker *walker, unsigned char *sha1)
 		req->localfile = -1;
 	}
 
-	/*
-	 * we turned off CURLOPT_FAILONERROR to avoid losing a
-	 * persistent connection and got CURLE_OK.
-	 */
-	if (req->http_code >= 300 && req->curl_result == CURLE_OK &&
-			(starts_with(req->url, "http://") ||
-			 starts_with(req->url, "https://"))) {
-		req->curl_result = CURLE_HTTP_RETURNED_ERROR;
-		xsnprintf(req->errorstr, sizeof(req->errorstr),
-			  "HTTP request failed");
-	}
-
 	if (obj_req->state == ABORTED) {
 		ret = error("Request for %s aborted", hex);
 	} else if (req->curl_result != CURLE_OK &&
@@ -544,10 +503,8 @@ static int fetch_object(struct walker *walker, unsigned char *sha1)
 	} else if (hashcmp(obj_req->sha1, req->real_sha1)) {
 		ret = error("File %s has bad hash", hex);
 	} else if (req->rename < 0) {
-		struct strbuf buf = STRBUF_INIT;
-		sha1_file_name(&buf, req->sha1);
-		ret = error("unable to write sha1 filename %s", buf.buf);
-		strbuf_release(&buf);
+		ret = error("unable to write sha1 filename %s",
+			    sha1_file_name(req->sha1));
 	}
 
 	release_http_object_request(req);
@@ -560,7 +517,7 @@ static int fetch(struct walker *walker, unsigned char *sha1)
 	struct walker_data *data = walker->data;
 	struct alt_base *altbase = data->alt;
 
-	if (!fetch_object(walker, sha1))
+	if (!fetch_object(walker, altbase, sha1))
 		return 0;
 	while (altbase) {
 		if (!http_fetch_pack(walker, altbase, sha1))

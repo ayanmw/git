@@ -1,11 +1,9 @@
 #include "cache.h"
-#include "config.h"
 #include "xdiff-interface.h"
 #include "xdiff/xtypes.h"
 #include "xdiff/xdiffi.h"
 #include "xdiff/xemit.h"
 #include "xdiff/xmacros.h"
-#include "xdiff/xutils.h"
 
 struct xdiff_emit_state {
 	xdiff_emit_consume_fn consume;
@@ -102,15 +100,18 @@ static int xdiff_outf(void *priv_, mmbuffer_t *mb, int nbuf)
 
 /*
  * Trim down common substring at the end of the buffers,
- * but end on a complete line.
+ * but leave at least ctx lines at the end.
  */
-static void trim_common_tail(mmfile_t *a, mmfile_t *b)
+static void trim_common_tail(mmfile_t *a, mmfile_t *b, long ctx)
 {
 	const int blk = 1024;
 	long trimmed = 0, recovered = 0;
 	char *ap = a->ptr + a->size;
 	char *bp = b->ptr + b->size;
 	long smaller = (a->size < b->size) ? a->size : b->size;
+
+	if (ctx)
+		return;
 
 	while (blk + trimmed <= smaller && !memcmp(ap - blk, bp - blk, blk)) {
 		trimmed += blk;
@@ -130,11 +131,7 @@ int xdi_diff(mmfile_t *mf1, mmfile_t *mf2, xpparam_t const *xpp, xdemitconf_t co
 	mmfile_t a = *mf1;
 	mmfile_t b = *mf2;
 
-	if (mf1->size > MAX_XDIFF_SIZE || mf2->size > MAX_XDIFF_SIZE)
-		return -1;
-
-	if (!xecfg->ctxlen && !(xecfg->flags & XDL_EMIT_FUNCCONTEXT))
-		trim_common_tail(&a, &b);
+	trim_common_tail(&a, &b, xecfg->ctxlen);
 
 	return xdl_diff(&a, &b, xpp, xecfg, xecb);
 }
@@ -166,9 +163,9 @@ int read_mmfile(mmfile_t *ptr, const char *filename)
 	size_t sz;
 
 	if (stat(filename, &st))
-		return error_errno("Could not stat %s", filename);
+		return error("Could not stat %s", filename);
 	if ((f = fopen(filename, "rb")) == NULL)
-		return error_errno("Could not open %s", filename);
+		return error("Could not open %s", filename);
 	sz = xsize_t(st.st_size);
 	ptr->ptr = xmalloc(sz ? sz : 1);
 	if (sz && fread(ptr->ptr, sz, 1, f) != 1) {
@@ -180,20 +177,20 @@ int read_mmfile(mmfile_t *ptr, const char *filename)
 	return 0;
 }
 
-void read_mmblob(mmfile_t *ptr, const struct object_id *oid)
+void read_mmblob(mmfile_t *ptr, const unsigned char *sha1)
 {
 	unsigned long size;
 	enum object_type type;
 
-	if (!oidcmp(oid, &null_oid)) {
+	if (!hashcmp(sha1, null_sha1)) {
 		ptr->ptr = xstrdup("");
 		ptr->size = 0;
 		return;
 	}
 
-	ptr->ptr = read_sha1_file(oid->hash, &type, &size);
+	ptr->ptr = read_sha1_file(sha1, &type, &size);
 	if (!ptr->ptr || type != OBJ_BLOB)
-		die("unable to read blob object %s", oid_to_hex(oid));
+		die("unable to read blob object %s", sha1_to_hex(sha1));
 	ptr->size = size;
 }
 
@@ -216,10 +213,11 @@ struct ff_regs {
 static long ff_regexp(const char *line, long len,
 		char *buffer, long buffer_size, void *priv)
 {
+	char *line_buffer;
 	struct ff_regs *regs = priv;
 	regmatch_t pmatch[2];
 	int i;
-	int result;
+	int result = -1;
 
 	/* Exclude terminating newline (and cr) from matching */
 	if (len > 0 && line[len-1] == '\n') {
@@ -229,16 +227,18 @@ static long ff_regexp(const char *line, long len,
 			len--;
 	}
 
+	line_buffer = xstrndup(line, len); /* make NUL terminated */
+
 	for (i = 0; i < regs->nr; i++) {
 		struct ff_reg *reg = regs->array + i;
-		if (!regexec_buf(&reg->re, line, len, 2, pmatch, 0)) {
+		if (!regexec(&reg->re, line_buffer, 2, pmatch, 0)) {
 			if (reg->negate)
-				return -1;
+				goto fail;
 			break;
 		}
 	}
 	if (regs->nr <= i)
-		return -1;
+		goto fail;
 	i = pmatch[1].rm_so >= 0 ? 1 : 0;
 	line += pmatch[i].rm_so;
 	result = pmatch[i].rm_eo - pmatch[i].rm_so;
@@ -247,6 +247,8 @@ static long ff_regexp(const char *line, long len,
 	while (result > 0 && (isspace(line[result - 1])))
 		result--;
 	memcpy(buffer, line, result);
+ fail:
+	free(line_buffer);
 	return result;
 }
 
@@ -260,7 +262,7 @@ void xdiff_set_find_func(xdemitconf_t *xecfg, const char *value, int cflags)
 	for (i = 0, regs->nr = 1; value[i]; i++)
 		if (value[i] == '\n')
 			regs->nr++;
-	ALLOC_ARRAY(regs->array, regs->nr);
+	regs->array = xmalloc(regs->nr * sizeof(struct ff_reg));
 	for (i = 0; i < regs->nr; i++) {
 		struct ff_reg *reg = regs->array + i;
 		const char *ep = strchr(value, '\n'), *expression;
@@ -295,17 +297,6 @@ void xdiff_clear_find_func(xdemitconf_t *xecfg)
 		xecfg->find_func = NULL;
 		xecfg->find_func_priv = NULL;
 	}
-}
-
-unsigned long xdiff_hash_string(const char *s, size_t len, long flags)
-{
-	return xdl_hash_record(&s, s + len, flags);
-}
-
-int xdiff_compare_lines(const char *l1, long s1,
-			const char *l2, long s2, long flags)
-{
-	return xdl_recmatch(l1, s1, l2, s2, flags);
 }
 
 int git_xmerge_style = -1;
