@@ -218,6 +218,8 @@ test_expect_success 'gc: prune old objects after local clone' '
 '
 
 test_expect_success 'garbage report in count-objects -v' '
+	test_when_finished "rm -f .git/objects/pack/fake*" &&
+	test_when_finished "rm -f .git/objects/pack/foo*" &&
 	: >.git/objects/pack/foo &&
 	: >.git/objects/pack/foo.bar &&
 	: >.git/objects/pack/foo.keep &&
@@ -243,8 +245,28 @@ EOF
 	test_cmp expected actual
 '
 
+test_expect_success 'clean pack garbage with gc' '
+	test_when_finished "rm -f .git/objects/pack/fake*" &&
+	test_when_finished "rm -f .git/objects/pack/foo*" &&
+	: >.git/objects/pack/foo.keep &&
+	: >.git/objects/pack/foo.pack &&
+	: >.git/objects/pack/fake.idx &&
+	: >.git/objects/pack/fake2.keep &&
+	: >.git/objects/pack/fake2.idx &&
+	: >.git/objects/pack/fake3.keep &&
+	git gc &&
+	git count-objects -v 2>stderr &&
+	grep "^warning:" stderr | sort >actual &&
+	cat >expected <<\EOF &&
+warning: no corresponding .idx or .pack: .git/objects/pack/fake3.keep
+warning: no corresponding .idx: .git/objects/pack/foo.keep
+warning: no corresponding .idx: .git/objects/pack/foo.pack
+EOF
+	test_cmp expected actual
+'
+
 test_expect_success 'prune .git/shallow' '
-	SHA1=`echo hi|git commit-tree HEAD^{tree}` &&
+	SHA1=$(echo hi|git commit-tree HEAD^{tree}) &&
 	echo $SHA1 >.git/shallow &&
 	git prune --dry-run >out &&
 	grep $SHA1 .git/shallow &&
@@ -259,6 +281,43 @@ test_expect_success 'prune: handle alternate object database' '
 	git clone --shared A B &&
 	git -C B commit --allow-empty -m "next commit" &&
 	git -C B prune
+'
+
+test_expect_success 'prune: handle index in multiple worktrees' '
+	git worktree add second-worktree &&
+	echo "new blob for second-worktree" >second-worktree/blob &&
+	git -C second-worktree add blob &&
+	git prune --expire=now &&
+	git -C second-worktree show :blob >actual &&
+	test_cmp second-worktree/blob actual
+'
+
+test_expect_success 'prune: handle HEAD in multiple worktrees' '
+	git worktree add --detach third-worktree &&
+	echo "new blob for third-worktree" >third-worktree/blob &&
+	git -C third-worktree add blob &&
+	git -C third-worktree commit -m "third" &&
+	rm .git/worktrees/third-worktree/index &&
+	test_must_fail git -C third-worktree show :blob &&
+	git prune --expire=now &&
+	git -C third-worktree show HEAD:blob >actual &&
+	test_cmp third-worktree/blob actual
+'
+
+test_expect_success 'prune: handle HEAD reflog in multiple worktrees' '
+	git config core.logAllRefUpdates true &&
+	echo "lost blob for third-worktree" >expected &&
+	(
+		cd third-worktree &&
+		cat ../expected >blob &&
+		git add blob &&
+		git commit -m "second commit in third" &&
+		git reset --hard HEAD^
+	) &&
+	git prune --expire=now &&
+	SHA1=`git hash-object expected` &&
+	git -C third-worktree show "$SHA1" >actual &&
+	test_cmp expected actual
 '
 
 test_done
